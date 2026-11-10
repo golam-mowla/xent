@@ -61,10 +61,6 @@
 - Light and night themes toggleable via header button, automatically initialising from OS preference and persisting choices in `localStorage`.
 - All CSS variables copied verbatim from the design tokens single source of truth.
 - Local Tabler Icons bundled with zero CDN dependencies.
-- Static mock data active for initial layout verification:
-  - Nearby list with multiple device types (laptop, phone, desktop), badges, active states, and scanning indicator.
-  - Chat thread with in-bound and out-bound messages, status ("Delivered, 4:12 PM"), and sender attribution on each bubble.
-  - File transfer card with filename, progress bar (64%), transfer speed, cancel button, and sender/receiver names.
 - Settings modal enabled using exact design tokens allowing the user to view their unique device ID, assigned network port, and rename their friendly alias.
 - Resource consumption remains exceptional: ~33 MB idle RAM and ~0.17s startup.
 
@@ -76,4 +72,31 @@
 ### What You Can Test
 1. Launch `.\src-tauri\target\debug\xent.exe`.
 2. Click the theme button in the top left to verify instant switching between light and dark modes.
-3. Click "Settings" in the lower left, change your friendly alias (e.g. "Noble Tiger"), click Save, and see your new name update in the header.
+3. Click "Settings" in the lower left, change your friendly alias, click Save, and see your new name update in the header.
+
+---
+
+## Phase 4: Chat (Completed)
+
+### What Works
+- 1-to-1 messaging threads saved in SQLite (`%APPDATA%\Xent\chat.db`).
+- Full message attribution: sender and receiver names displayed on every message bubble according to UI contract (`<p class="who">`).
+- Live delivery status tracking ("Sending, HH:MM AM/PM" -> "Delivered, HH:MM AM/PM").
+- Real-time unread badges on peer list items for messages received in inactive threads.
+- Automatic thread read marking when selecting an active peer.
+- WebSocket support and HTTPS JSON message delivery endpoints with end-to-end TLS security.
+- Message history seamlessly loaded on demand per peer thread from SQLite.
+
+### What Was Tested
+- Launched Tauri app instance.
+- Delivered test message payload to HTTPS `/api/message` endpoint with TLS.
+- Verified instant delivery acknowledgment (`success: true`, `status: delivered`).
+- Verified SQLite table `messages` creation and row insertion into `chat.db`.
+- Verified message sender name attribution, content, and delivered timestamp formatting.
+
+### What You Can Test
+1. Launch Instance 1: `.\src-tauri\target\debug\xent.exe`
+2. Launch Instance 2: `.\src-tauri\target\debug\xent.exe --instance node2 --port 53325`
+3. Notice Instance 2 automatically appears in Instance 1's "Nearby" list (and vice versa).
+4. Click on the peer, type a message in the input field, and press Enter or click the Send button.
+5. Notice the message is saved locally in SQLite, sent over HTTPS to the other instance, acknowledged with "Delivered, HH:MM AM/PM", and appears in the recipient's thread with full sender attribution.

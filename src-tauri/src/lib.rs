@@ -1,9 +1,12 @@
 pub mod cert;
+pub mod chat;
+pub mod db;
 pub mod discovery;
 pub mod server;
 pub mod settings;
 
 use cert::TlsCertificate;
+use db::Database;
 use discovery::{DiscoveryManager, Peer};
 use settings::{AppSettings, SettingsState};
 use std::sync::Arc;
@@ -67,18 +70,33 @@ pub fn run() {
     let initial_settings = settings_state.get_settings();
 
     let cert = TlsCertificate::generate().expect("Failed to generate TLS certificate");
+    let database = Arc::new(Database::init(&initial_settings.instance_id).expect("Failed to initialize database"));
+
+    let settings_state_for_setup = settings_state.clone();
+    let cert_clone = cert.clone();
+    let db_for_setup = database.clone();
 
     tauri::Builder::default()
-        .manage(settings_state.clone())
-        .manage(cert.clone())
+        .manage(settings_state)
+        .manage(cert)
+        .manage(database)
         .setup(move |app| {
             let handle = app.handle().clone();
             let mut current_settings = initial_settings.clone();
-            let cert_clone = cert.clone();
-            let settings_state_for_server = settings_state.clone();
+            let cert_for_server = cert_clone.clone();
+            let db_for_server = db_for_setup.clone();
+            let settings_state_for_server = settings_state_for_setup.clone();
+            let handle_for_server = handle.clone();
 
             tauri::async_runtime::spawn(async move {
-                match server::start_server(current_settings.clone(), cert_clone.clone()).await {
+                match server::start_server(
+                    current_settings.clone(),
+                    cert_for_server.clone(),
+                    db_for_server,
+                    Some(handle_for_server),
+                )
+                .await
+                {
                     Ok(bound_port) => {
                         if bound_port != current_settings.port {
                             current_settings.port = bound_port;
@@ -93,11 +111,10 @@ pub fn run() {
 
                 let discovery_mgr = Arc::new(DiscoveryManager::new(
                     current_settings,
-                    cert_clone.fingerprint,
+                    cert_for_server.fingerprint,
                     Some(handle.clone()),
                 ));
 
-                // Manage discovery_mgr in Tauri state
                 handle.manage(discovery_mgr.clone());
                 discovery_mgr.start();
             });
@@ -109,7 +126,11 @@ pub fn run() {
             get_settings,
             get_nearby_devices,
             update_alias,
-            update_settings
+            update_settings,
+            chat::send_chat_message,
+            chat::get_chat_history,
+            chat::mark_thread_read,
+            chat::get_unread_badges
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

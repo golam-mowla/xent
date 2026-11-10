@@ -22,3 +22,32 @@
 1. Run `cargo run --manifest-path src-tauri/Cargo.toml` or `.\src-tauri\target\debug\xent.exe`.
 2. Inspect `%APPDATA%\Xent\settings.json` to see your generated friendly alias and device ID.
 3. Toggle between light and dark themes using the moon/sun button in the top left.
+
+---
+
+## Phase 2: Discovery (Completed)
+
+### What Works
+- LocalSend-compatible UDP multicast discovery over `224.0.0.167:53317` with `SO_REUSEADDR` and loopback enabled.
+- Automatic device announcement containing device ID, alias, device type, port, protocol version, and TLS certificate fingerprint.
+- Unicast/multicast immediate response mechanism so newly announced devices are discovered instantly.
+- Background HTTP/HTTPS server on each node running via Axum with self-signed TLS certificates (generated in-memory using `rcgen` and `ring`).
+- SHA-256 certificate fingerprint exchange and validation for secure peer-to-peer transport.
+- Automatic offline detection: peers that do not send an announcement within 8 seconds (or that emit a `bye` packet) are pruned from the nearby devices list and disappear from "Nearby".
+- Dynamic fallback port binding if default port is occupied.
+
+### What Was Tested
+- Ran two simultaneous instances on the same host network interface (`192.168.0.105`): Instance 1 on port 53318 ("Radiant Stag") and Instance 2 on port 53325 ("Silver Penguin").
+- Verified mutual discovery:
+  - Instance 1 immediately logged discovery of `Silver Penguin` at `192.168.0.105:53325`.
+  - Instance 2 immediately logged discovery of `Radiant Stag` at `192.168.0.105:53318`.
+- Queried HTTPS `/api/info` endpoints on both instances via curl and verified valid JSON responses with TLS fingerprints.
+- Terminated Instance 2 and observed Instance 1 automatically log: `[Discovery] Peer offline (timed out): Silver Penguin (...)` after 8 seconds.
+
+### What You Can Test
+1. Run Instance 1 in one terminal:
+   `.\src-tauri\target\debug\xent.exe`
+2. Run Instance 2 in another terminal:
+   `.\src-tauri\target\debug\xent.exe --instance node2 --port 53325`
+3. Check the console or logs to see both instances discover each other and exchange fingerprints.
+4. Kill Instance 2 and watch it disappear from the active peers list after 8 seconds.

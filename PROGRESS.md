@@ -100,3 +100,30 @@
 3. Notice Instance 2 automatically appears in Instance 1's "Nearby" list (and vice versa).
 4. Click on the peer, type a message in the input field, and press Enter or click the Send button.
 5. Notice the message is saved locally in SQLite, sent over HTTPS to the other instance, acknowledged with "Delivered, HH:MM AM/PM", and appears in the recipient's thread with full sender attribution.
+
+---
+
+## Phase 5: Files (Completed)
+
+### What Works
+- Drag-and-drop and native file picker attachment (via paperclip icon).
+- Streaming chunked binary file transfers over HTTPS with TLS.
+- Explicit receiver Accept and Decline flow: incoming files require receiver confirmation before downloading.
+- Real-time animated progress bar (`.bar>div`), transfer speed (MB/s), and estimated time remaining calculation.
+- Transfer cancellation from either side using the `ti ti-x` cancel icon.
+- Full UI contract adherence: sender and receiver names appear on every file card (e.g. "Swift Falcon to Calm Panda, 412 MB, 38 MB/s").
+- Destination file deduplication in Downloads folder (`file (1).ext`) to prevent overwriting existing files.
+
+### What Was Tested
+- Triggered file transfer request over HTTPS to `/api/files/request`.
+- Verified request acknowledgment and transfer session creation.
+- Streamed binary chunks (1,048,576 bytes) to `/api/files/chunk/{transfer_id}`.
+- Verified destination file was correctly assembled and saved in the user's Downloads directory with matching size and integrity.
+- Verified UI progress events and file card layout.
+
+### What You Can Test
+1. Launch two instances of Xent.
+2. Select a peer in the Nearby list.
+3. Click the paperclip icon in the compose bar to select a file from your computer.
+4. The receiver will see the file transfer card appear with "Accept" and "Decline" buttons.
+5. Click "Accept": chunked streaming begins immediately with the progress bar updating in real-time, showing speed and estimated time remaining until 100% completion.

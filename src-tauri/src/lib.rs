@@ -4,6 +4,7 @@ pub mod db;
 pub mod discovery;
 pub mod server;
 pub mod settings;
+pub mod transfer;
 
 use cert::TlsCertificate;
 use db::Database;
@@ -11,6 +12,7 @@ use discovery::{DiscoveryManager, Peer};
 use settings::{AppSettings, SettingsState};
 use std::sync::Arc;
 use tauri::{Manager, State};
+use transfer::TransferManager;
 
 #[tauri::command]
 fn get_device_info(state: State<'_, Arc<SettingsState>>) -> AppSettings {
@@ -88,11 +90,17 @@ pub fn run() {
             let settings_state_for_server = settings_state_for_setup.clone();
             let handle_for_server = handle.clone();
 
+            let transfer_mgr = Arc::new(TransferManager::new(Some(handle.clone())));
+            handle.manage(transfer_mgr.clone());
+
+            let transfer_mgr_for_server = transfer_mgr.clone();
+
             tauri::async_runtime::spawn(async move {
                 match server::start_server(
                     current_settings.clone(),
                     cert_for_server.clone(),
                     db_for_server,
+                    transfer_mgr_for_server,
                     Some(handle_for_server),
                 )
                 .await
@@ -130,7 +138,12 @@ pub fn run() {
             chat::send_chat_message,
             chat::get_chat_history,
             chat::mark_thread_read,
-            chat::get_unread_badges
+            chat::get_unread_badges,
+            transfer::pick_file_to_send,
+            transfer::send_file_request,
+            transfer::respond_file_transfer,
+            transfer::start_file_upload,
+            transfer::cancel_file_transfer
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

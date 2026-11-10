@@ -54,7 +54,7 @@ p{margin:0}
 .file-top{display:flex;align-items:center;gap:10px}
 .file .av{background:var(--c-file)}
 .bar{margin-top:10px;height:8px;border-radius:4px;background:var(--pg);overflow:hidden}
-.bar>div{width:64%;height:100%;background:var(--online);border-radius:4px}
+.bar>div{width:64%;height:100%;background:var(--online);border-radius:4px;transition:width 0.2s ease}
 .compose{padding:12px 14px;background:var(--pn);border-top:.5px solid var(--bd);display:flex;align-items:center;gap:10px}
 .compose input{flex:1;background:var(--in);color:var(--tx);border:0;border-radius:20px;padding:9px 16px;font:inherit;outline:none}
 .compose input::placeholder{color:var(--tx2)}
@@ -93,7 +93,7 @@ p{margin:0}
     </div>
 
     <div class="msgs" id="msg-container">
-      <!-- Chat bubbles rendered dynamically -->
+      <!-- Chat bubbles and file cards rendered dynamically -->
     </div>
 
     <div class="compose">
@@ -148,6 +148,7 @@ var chatPeerStatusEl = document.getElementById('chat-peer-status');
 var msgContainerEl = document.getElementById('msg-container');
 var composeInput = document.getElementById('compose-input');
 var btnSend = document.getElementById('btn-send');
+var btnAttach = document.getElementById('btn-attach');
 
 var settingsModal = document.getElementById('modal-settings');
 var btnSettings = document.getElementById('btn-settings');
@@ -162,10 +163,28 @@ var mySettings = null;
 var peersMap = {}; // device_id -> peer
 var unreadCounts = {}; // device_id -> count
 var activePeerId = null;
+var activeTransfers = {}; // transfer_id -> info
 
 function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function formatBytes(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  var k = 1024;
+  var sizes = ['B', 'KB', 'MB', 'GB'];
+  var i = Math.floor(Math.log(bytes) / Math.log(k));
+  return (bytes / Math.pow(k, i)).toFixed(1).replace(/\.0$/, '') + ' ' + sizes[i];
+}
+
+function getFileIcon(name) {
+  var ext = (name || '').split('.').pop().toLowerCase();
+  if (['mp4', 'mkv', 'avi', 'mov', 'webm'].indexOf(ext) !== -1) return 'ti ti-movie';
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].indexOf(ext) !== -1) return 'ti ti-photo';
+  if (['mp3', 'wav', 'flac', 'aac', 'ogg'].indexOf(ext) !== -1) return 'ti ti-music';
+  if (['zip', 'rar', '7z', 'tar', 'gz'].indexOf(ext) !== -1) return 'ti ti-file-zip';
+  return 'ti ti-file';
 }
 
 function updateMyDeviceUI(info) {
@@ -205,7 +224,6 @@ function renderPeerList() {
     return;
   }
 
-  // If no active peer, select first peer
   if (!activePeerId && peerList.length > 0) {
     selectPeer(peerList[0].device_id);
   }
@@ -226,7 +244,6 @@ function renderPeerList() {
 
   peerListEl.innerHTML = html;
 
-  // Add click listeners
   var rows = peerListEl.querySelectorAll('.row');
   rows.forEach(function(row) {
     row.addEventListener('click', function() {
@@ -248,7 +265,6 @@ function selectPeer(peerId) {
   chatPeerStatusEl.textContent = 'Online on this Wi-Fi';
   composeInput.placeholder = 'Message ' + peer.alias;
 
-  // Clear unread badge
   unreadCounts[peerId] = 0;
   renderPeerList();
 
@@ -272,6 +288,103 @@ function renderMessage(msg) {
   return div;
 }
 
+function renderFileCard(t) {
+  var card = document.getElementById('transfer-' + t.transfer_id);
+  if (!card) {
+    card = document.createElement('div');
+    card.className = 'file';
+    card.id = 'transfer-' + t.transfer_id;
+    msgContainerEl.appendChild(card);
+  }
+
+  var iconClass = getFileIcon(t.file_name);
+  var pct = t.file_size > 0 ? Math.min(100, Math.round((t.transferred_bytes / t.file_size) * 100)) : 0;
+  var speedText = t.speed_mbps > 0 ? t.speed_mbps.toFixed(1) + ' MB/s' : '';
+  var subInfo = escapeHtml(t.sender_name) + ' to ' + escapeHtml(t.receiver_name) + ', ' + formatBytes(t.file_size);
+  if (speedText) subInfo += ', ' + speedText;
+
+  var statusText = '';
+  var actionButtonsHtml = '';
+
+  if (t.status === 'Pending') {
+    if (t.is_incoming) {
+      statusText = 'Incoming file offer';
+      actionButtonsHtml = '<div style="display:flex;gap:8px;margin-top:8px">' +
+        '<button class="modal-btn btn-accept" data-id="' + t.transfer_id + '" style="padding:4px 14px;font-size:12px">Accept</button>' +
+        '<button class="modal-btn btn-decline" data-id="' + t.transfer_id + '" style="padding:4px 14px;font-size:12px;background:var(--in);color:var(--tx)">Decline</button>' +
+      '</div>';
+    } else {
+      statusText = 'Waiting for receiver to accept...';
+    }
+  } else if (t.status === 'Accepted') {
+    statusText = 'Accepted, preparing transfer...';
+    if (!t.is_incoming) {
+      // Sender starts upload
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('start_file_upload', { transferId: t.transfer_id }).catch(console.error);
+      }
+    }
+  } else if (t.status === 'Declined') {
+    statusText = 'Transfer declined';
+  } else if (t.status === 'Transferring') {
+    var remainingBytes = t.file_size - t.transferred_bytes;
+    var secondsLeft = t.speed_mbps > 0 ? Math.ceil((remainingBytes / (1024 * 1024)) / t.speed_mbps) : 0;
+    var timeLeftText = secondsLeft > 0 ? ', about ' + secondsLeft + ' s left' : '';
+    statusText = pct + '%' + timeLeftText;
+  } else if (t.status === 'Completed') {
+    statusText = '100%, Completed';
+  } else if (t.status === 'Cancelled') {
+    statusText = 'Transfer cancelled';
+  } else if (typeof t.status === 'object' && t.status.Failed) {
+    statusText = 'Failed: ' + t.status.Failed;
+  }
+
+  var cancelIconHtml = (t.status === 'Transferring' || t.status === 'Pending') ?
+    '<i class="ti ti-x ico btn-cancel" data-id="' + t.transfer_id + '" aria-label="Cancel" style="cursor:pointer"></i>' : '';
+
+  card.innerHTML = '<div class="file-top">' +
+    '<div class="av" style="background:var(--c-file)"><i class="' + iconClass + '" style="font-size:20px" aria-hidden="true"></i></div>' +
+    '<div class="grow"><p class="name">' + escapeHtml(t.file_name) + '</p><p class="sub">' + subInfo + '</p></div>' +
+    cancelIconHtml +
+  '</div>' +
+  '<div class="bar"><div style="width:' + pct + '%"></div></div>' +
+  '<p class="sub" style="margin-top:6px">' + statusText + '</p>' +
+  actionButtonsHtml;
+
+  // Event handlers for accept/decline/cancel
+  var btnAccept = card.querySelector('.btn-accept');
+  if (btnAccept) {
+    btnAccept.addEventListener('click', function() {
+      var id = this.getAttribute('data-id');
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('respond_file_transfer', { transferId: id, accepted: true }).catch(console.error);
+      }
+    });
+  }
+
+  var btnDecline = card.querySelector('.btn-decline');
+  if (btnDecline) {
+    btnDecline.addEventListener('click', function() {
+      var id = this.getAttribute('data-id');
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('respond_file_transfer', { transferId: id, accepted: false }).catch(console.error);
+      }
+    });
+  }
+
+  var btnCancel = card.querySelector('.btn-cancel');
+  if (btnCancel) {
+    btnCancel.addEventListener('click', function() {
+      var id = this.getAttribute('data-id');
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('cancel_file_transfer', { transferId: id }).catch(console.error);
+      }
+    });
+  }
+
+  msgContainerEl.scrollTop = msgContainerEl.scrollHeight;
+}
+
 function loadChatHistory(peerId) {
   if (!window.__TAURI__ || !window.__TAURI__.core) return;
   window.__TAURI__.core.invoke('get_chat_history', { peerId: peerId }).then(function(messages) {
@@ -279,11 +392,17 @@ function loadChatHistory(peerId) {
     if (messages.length === 0) {
       var peer = peersMap[peerId];
       var name = peer ? peer.alias : 'device';
-      msgContainerEl.innerHTML = '<div style="margin:auto;text-align:center;color:var(--tx2);font-size:13px"><p>No messages yet with ' + escapeHtml(name) + '</p><p class="sub" style="margin-top:4px">Send a message to start chatting</p></div>';
+      msgContainerEl.innerHTML = '<div style="margin:auto;text-align:center;color:var(--tx2);font-size:13px"><p>No messages yet with ' + escapeHtml(name) + '</p><p class="sub" style="margin-top:4px">Send a message or file to start chatting</p></div>';
       return;
     }
     messages.forEach(function(m) {
       msgContainerEl.appendChild(renderMessage(m));
+    });
+    // Also re-render any active transfers for this peer
+    Object.values(activeTransfers).forEach(function(t) {
+      if (t.peer_id === peerId) {
+        renderFileCard(t);
+      }
     });
     msgContainerEl.scrollTop = msgContainerEl.scrollHeight;
   }).catch(console.error);
@@ -321,6 +440,36 @@ composeInput.addEventListener('keydown', function(e) {
   }
 });
 btnSend.addEventListener('click', sendMessage);
+
+// File attachment
+if (btnAttach) {
+  btnAttach.addEventListener('click', function() {
+    if (!activePeerId) return;
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('pick_file_to_send').then(function(path) {
+        if (path) {
+          window.__TAURI__.core.invoke('send_file_request', {
+            peerId: activePeerId,
+            filePath: path
+          }).then(function(info) {
+            activeTransfers[info.transfer_id] = info;
+            renderFileCard(info);
+          }).catch(console.error);
+        }
+      }).catch(console.error);
+    }
+  });
+}
+
+// Drag and Drop
+document.addEventListener('dragover', function(e) {
+  e.preventDefault();
+  e.stopPropagation();
+});
+document.addEventListener('drop', function(e) {
+  e.preventDefault();
+  e.stopPropagation();
+});
 
 // Settings Modal interactions
 if (btnSettings) {
@@ -367,7 +516,6 @@ if (window.__TAURI__ && window.__TAURI__.core) {
     renderPeerList();
   }).catch(console.error);
 
-  // Listen to peer changes
   if (window.__TAURI__.event) {
     window.__TAURI__.event.listen('nearby_devices_changed', function(event) {
       var devices = event.payload || [];
@@ -375,7 +523,6 @@ if (window.__TAURI__ && window.__TAURI__.core) {
       devices.forEach(function(d) { newMap[d.device_id] = d; });
       peersMap = newMap;
 
-      // If active peer went offline, select another or none
       if (activePeerId && !peersMap[activePeerId]) {
         var remaining = Object.keys(peersMap);
         if (remaining.length > 0) {
@@ -387,7 +534,6 @@ if (window.__TAURI__ && window.__TAURI__.core) {
       renderPeerList();
     });
 
-    // Listen to incoming messages
     window.__TAURI__.event.listen('new_message', function(event) {
       var msg = event.payload;
       if (!msg) return;
@@ -402,7 +548,6 @@ if (window.__TAURI__ && window.__TAURI__.core) {
       }
     });
 
-    // Listen to status updates
     window.__TAURI__.event.listen('message_status_updated', function(event) {
       var msg = event.payload;
       if (!msg) return;
@@ -410,6 +555,16 @@ if (window.__TAURI__ && window.__TAURI__.core) {
       if (el) {
         var statusEl = el.querySelector('.status');
         if (statusEl) statusEl.textContent = msg.status;
+      }
+    });
+
+    // File transfer progress updates
+    window.__TAURI__.event.listen('file_transfer_progress', function(event) {
+      var info = event.payload;
+      if (!info) return;
+      activeTransfers[info.transfer_id] = info;
+      if (info.peer_id === activePeerId) {
+        renderFileCard(info);
       }
     });
   }

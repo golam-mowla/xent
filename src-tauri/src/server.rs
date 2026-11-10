@@ -1,8 +1,10 @@
 use crate::cert::TlsCertificate;
 use crate::db::{ChatMessage, Database};
 use crate::settings::AppSettings;
+use crate::transfer::{FileTransferInfo, FileTransferRequest, FileTransferResponse, TransferManager, TransferStatus};
 use axum::{
-    extract::{State, WebSocketUpgrade},
+    body::Bytes,
+    extract::{Path, Query, State, WebSocketUpgrade},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -10,6 +12,7 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
@@ -44,10 +47,16 @@ pub struct MessageAck {
     pub timestamp: i64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ChunkQuery {
+    pub offset: u64,
+}
+
 pub struct ServerState {
     pub settings: AppSettings,
     pub cert: TlsCertificate,
     pub db: Arc<Database>,
+    pub transfer_mgr: Arc<TransferManager>,
     pub app_handle: Option<AppHandle>,
 }
 
@@ -55,12 +64,14 @@ pub async fn start_server(
     settings: AppSettings,
     cert: TlsCertificate,
     db: Arc<Database>,
+    transfer_mgr: Arc<TransferManager>,
     app_handle: Option<AppHandle>,
 ) -> Result<u16, Box<dyn std::error::Error + Send + Sync>> {
     let state = Arc::new(ServerState {
         settings: settings.clone(),
         cert: cert.clone(),
         db,
+        transfer_mgr,
         app_handle,
     });
 
@@ -69,6 +80,10 @@ pub async fn start_server(
         .route("/api/info", get(info_handler))
         .route("/api/message", post(message_handler))
         .route("/api/ws", get(ws_handler))
+        .route("/api/files/request", post(file_request_handler))
+        .route("/api/files/response", post(file_response_handler))
+        .route("/api/files/chunk/:transfer_id", post(file_chunk_handler))
+        .route("/api/files/cancel/:transfer_id", post(file_cancel_handler))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -164,6 +179,86 @@ async fn message_handler(
         status: "delivered".to_string(),
         timestamp: now,
     })
+}
+
+async fn file_request_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<FileTransferRequest>,
+) -> Json<serde_json::Value> {
+    let download_dir = PathBuf::from(&state.settings.download_dir);
+    let mut dest_path = download_dir.join(&req.file_name);
+
+    // File name deduplication if file already exists
+    if dest_path.exists() {
+        let stem = dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+        let ext = dest_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let mut counter = 1;
+        loop {
+            let new_name = if ext.is_empty() {
+                format!("{} ({})", stem, counter)
+            } else {
+                format!("{} ({}).{}", stem, counter, ext)
+            };
+            let candidate = download_dir.join(new_name);
+            if !candidate.exists() {
+                dest_path = candidate;
+                break;
+            }
+            counter += 1;
+        }
+    }
+
+    let transfer_info = FileTransferInfo {
+        transfer_id: req.transfer_id.clone(),
+        peer_id: req.sender_id.clone(),
+        sender_id: req.sender_id.clone(),
+        sender_name: req.sender_name.clone(),
+        receiver_id: req.receiver_id.clone(),
+        receiver_name: req.receiver_name.clone(),
+        file_name: req.file_name.clone(),
+        file_size: req.file_size,
+        transferred_bytes: 0,
+        speed_mbps: 0.0,
+        status: TransferStatus::Pending,
+        is_incoming: true,
+        file_path: Some(dest_path.to_string_lossy().to_string()),
+    };
+
+    state.transfer_mgr.add_transfer(transfer_info);
+
+    Json(serde_json::json!({
+        "success": true,
+        "transfer_id": req.transfer_id
+    }))
+}
+
+async fn file_response_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(res): Json<FileTransferResponse>,
+) -> Json<serde_json::Value> {
+    state.transfer_mgr.handle_response(&res.transfer_id, res.accepted);
+    Json(serde_json::json!({ "success": true }))
+}
+
+async fn file_chunk_handler(
+    State(state): State<Arc<ServerState>>,
+    Path(transfer_id): Path<String>,
+    Query(query): Query<ChunkQuery>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, String> {
+    let updated = state.transfer_mgr.write_incoming_chunk(&transfer_id, query.offset, &body)?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "transferred": updated.transferred_bytes
+    })))
+}
+
+async fn file_cancel_handler(
+    State(state): State<Arc<ServerState>>,
+    Path(transfer_id): Path<String>,
+) -> Json<serde_json::Value> {
+    state.transfer_mgr.cancel(&transfer_id);
+    Json(serde_json::json!({ "success": true }))
 }
 
 async fn ws_handler(

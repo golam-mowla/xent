@@ -127,3 +127,27 @@
 3. Click the paperclip icon in the compose bar to select a file from your computer.
 4. The receiver will see the file transfer card appear with "Accept" and "Decline" buttons.
 5. Click "Accept": chunked streaming begins immediately with the progress bar updating in real-time, showing speed and estimated time remaining until 100% completion.
+
+---
+
+## Phase 6: Release (Completed)
+
+### What Works
+- System tray icon with context menu ("Open Xent", "Quit Xent") and left-click toggle.
+- Background minimization: closing the window minimizes to tray instead of quitting.
+- Graceful shutdown: quitting via tray sends a multicast `bye` packet so peers immediately know the device went offline.
+- Windows NSIS installer configuration in `src-tauri/tauri.conf.json`.
+- GitHub Actions CI/CD release workflow in `.github/workflows/release.yml` building on `v*` version tags and attaching the Windows installer to GitHub Releases.
+- Comprehensive `README.md` with architecture diagrams, performance results, and usage instructions.
+
+### What Was Tested
+- Tray icon builder and event loop verified with `cargo check` and `cargo build`.
+- Clean exit sequence verified with background multicast bye packet emission.
+- Verified GitHub Actions release workflow syntax and triggers.
+
+### What You Can Test
+1. Launch `.\src-tauri\target\debug\xent.exe`.
+2. Look at the Windows system tray near the clock to see the Xent icon.
+3. Left-click the tray icon to hide the window; left-click again to restore it.
+4. Close the main window with the 'X' button: notice the app stays running quietly in the tray.
+5. Right-click the tray icon and select "Quit Xent" to cleanly exit.

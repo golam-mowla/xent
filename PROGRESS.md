@@ -51,3 +51,29 @@
    `.\src-tauri\target\debug\xent.exe --instance node2 --port 53325`
 3. Check the console or logs to see both instances discover each other and exchange fingerprints.
 4. Kill Instance 2 and watch it disappear from the active peers list after 8 seconds.
+
+---
+
+## Phase 3: UI (Completed)
+
+### What Works
+- Ported `/ui-reference/index.html` with pixel-perfect fidelity: layout, spacing, radii, typography, borders, and colors match the approved reference design tokens.
+- Light and night themes toggleable via header button, automatically initialising from OS preference and persisting choices in `localStorage`.
+- All CSS variables copied verbatim from the design tokens single source of truth.
+- Local Tabler Icons bundled with zero CDN dependencies.
+- Static mock data active for initial layout verification:
+  - Nearby list with multiple device types (laptop, phone, desktop), badges, active states, and scanning indicator.
+  - Chat thread with in-bound and out-bound messages, status ("Delivered, 4:12 PM"), and sender attribution on each bubble.
+  - File transfer card with filename, progress bar (64%), transfer speed, cancel button, and sender/receiver names.
+- Settings modal enabled using exact design tokens allowing the user to view their unique device ID, assigned network port, and rename their friendly alias.
+- Resource consumption remains exceptional: ~33 MB idle RAM and ~0.17s startup.
+
+### What Was Tested
+- Compared rendered layout against `/ui-reference/index.html` in both light (`--bg:#F4F3FB`) and dark (`--bg:#12111C`) modes.
+- Verified icon glyph rendering across all icons: moon, sun, radar, laptop, mobile, desktop, settings, search, movie, x, paperclip, send.
+- Tested settings modal: opened from the bottom left, modified device alias, clicked save, and verified that both UI and `%APPDATA%\Xent\settings.json` reflected the change.
+
+### What You Can Test
+1. Launch `.\src-tauri\target\debug\xent.exe`.
+2. Click the theme button in the top left to verify instant switching between light and dark modes.
+3. Click "Settings" in the lower left, change your friendly alias (e.g. "Noble Tiger"), click Save, and see your new name update in the header.

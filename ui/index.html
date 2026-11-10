@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LAN Messenger - UI reference</title>
+<link rel="stylesheet" href="./tabler-icons.min.css">
+<style>
+/* DESIGN TOKENS: the single source of truth. Implement the real app with these exact values. */
+:root{
+  --bg:#F4F3FB;--pn:#FFFFFF;--tx:#1E1B3A;--tx2:#6B6892;--bd:#E4E2F3;
+  --ac:#6C5CE7;--ac2:#EDEAFD;--in:#F0EEFA;--rc:#FFFFFF;--rt:#1E1B3A;--pg:#E4E2F3;
+  --online:#1D9E75;--c-laptop:#1D9E75;--c-phone:#D85A30;--c-desktop:#378ADD;--c-file:#D4537E;--badge:#D4537E;
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+:root[data-theme=dark]{
+  --bg:#12111C;--pn:#1B1A29;--tx:#F1EFFF;--tx2:#9C99BD;--bd:#2A2840;
+  --ac:#8B7DFF;--ac2:#2A2650;--in:#242238;--rc:#242238;--rt:#F1EFFF;--pg:#2A2840;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--tx);font-family:var(--font);font-size:14px;display:flex;align-items:center;justify-content:center;padding:16px}
+p{margin:0}
+.app{width:100%;max-width:980px;height:min(640px,calc(100vh - 32px));background:var(--bg);border:.5px solid var(--bd);border-radius:16px;overflow:hidden;display:grid;grid-template-columns:230px minmax(0,1fr)}
+.side{background:var(--pn);border-right:.5px solid var(--bd);display:flex;flex-direction:column}
+.me{padding:14px;display:flex;align-items:center;gap:10px}
+.av{width:36px;height:36px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#fff;flex:none}
+.av.me-av{background:var(--ac);border-radius:50%;font-size:13px;font-weight:500}
+.name{font-size:14px;font-weight:500}
+.sub{font-size:12px;color:var(--tx2)}
+.grow{flex:1;min-width:0}
+#tg{width:34px;height:34px;padding:0;border-radius:50%;border:.5px solid var(--bd);background:var(--in);color:var(--tx);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.nearby{padding:4px 14px 8px;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--tx2)}
+.list{padding:0 8px;display:flex;flex-direction:column;gap:2px;overflow:auto}
+.row{display:flex;align-items:center;gap:10px;padding:8px;border-radius:12px;cursor:pointer}
+.row:hover{background:var(--in)}
+.row.active{background:var(--ac2)}
+.badge{min-width:20px;height:20px;border-radius:10px;background:var(--badge);color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center}
+.settings{margin-top:auto;padding:14px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--tx2);cursor:pointer}
+.main{display:flex;flex-direction:column;min-width:0}
+.head{padding:12px 18px;background:var(--pn);border-bottom:.5px solid var(--bd);display:flex;align-items:center;gap:10px}
+.head .name{font-size:15px}
+.online{font-size:12px;color:var(--online)}
+.msgs{flex:1;padding:18px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+.who{font-size:12px;color:var(--tx2);margin-bottom:3px}
+.in-b{align-self:flex-start;max-width:75%}
+.in-b .who{margin-left:4px}
+.out-b{align-self:flex-end;max-width:75%}
+.out-b .who{margin-right:4px;text-align:right}
+.bub-in{background:var(--rc);color:var(--rt);border:.5px solid var(--bd);padding:9px 14px;border-radius:4px 16px 16px 16px;line-height:1.5}
+.bub-out{background:var(--ac);color:#fff;padding:9px 14px;border-radius:16px 4px 16px 16px;line-height:1.5}
+.status{font-size:11px;color:var(--tx2);margin:3px 4px 0 0;text-align:right}
+.file{align-self:flex-end;width:80%;background:var(--pn);border:.5px solid var(--bd);border-radius:16px;padding:12px}
+.file-top{display:flex;align-items:center;gap:10px}
+.file .av{background:var(--c-file)}
+.bar{margin-top:10px;height:8px;border-radius:4px;background:var(--pg);overflow:hidden}
+.bar>div{width:64%;height:100%;background:var(--online);border-radius:4px}
+.compose{padding:12px 14px;background:var(--pn);border-top:.5px solid var(--bd);display:flex;align-items:center;gap:10px}
+.compose input{flex:1;background:var(--in);color:var(--tx);border:0;border-radius:20px;padding:9px 16px;font:inherit;outline:none}
+.compose input::placeholder{color:var(--tx2)}
+.send{width:38px;height:38px;border-radius:50%;background:var(--ac);color:#fff;display:flex;align-items:center;justify-content:center;border:0;cursor:pointer}
+.ico{font-size:18px;color:var(--tx2)}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="side">
+    <div class="me">
+      <div class="av me-av" id="my-avatar">SF</div>
+      <div class="grow"><p class="name" id="my-alias">Swift Falcon</p><p class="sub">This device</p></div>
+      <button id="tg" aria-label="Switch theme"><i class="ti ti-moon" id="ti" style="font-size:18px" aria-hidden="true"></i></button>
+    </div>
+    <div class="nearby"><span>Nearby, 3 online</span><i class="ti ti-radar-2" style="font-size:16px;color:var(--online)" aria-label="Scanning"></i></div>
+    <div class="list">
+      <div class="row active">
+        <div class="av" style="background:var(--c-laptop)"><i class="ti ti-device-laptop" style="font-size:20px" aria-hidden="true"></i></div>
+        <div class="grow"><p class="name">Calm Panda</p><p class="sub">Windows laptop</p></div>
+      </div>
+      <div class="row">
+        <div class="av" style="background:var(--c-phone)"><i class="ti ti-device-mobile" style="font-size:20px" aria-hidden="true"></i></div>
+        <div class="grow"><p class="name">Gold Tiger</p><p class="sub">Android phone</p></div>
+        <span class="badge">2</span>
+      </div>
+      <div class="row">
+        <div class="av" style="background:var(--c-desktop)"><i class="ti ti-device-desktop" style="font-size:20px" aria-hidden="true"></i></div>
+        <div class="grow"><p class="name">Blue Otter</p><p class="sub">Linux desktop</p></div>
+      </div>
+    </div>
+    <div class="settings"><i class="ti ti-settings" style="font-size:16px" aria-hidden="true"></i>Settings</div>
+  </aside>
+
+  <section class="main">
+    <div class="head">
+      <div class="av" style="background:var(--c-laptop)"><i class="ti ti-device-laptop" style="font-size:20px" aria-hidden="true"></i></div>
+      <div class="grow"><p class="name">Calm Panda</p><p class="online">Online on this Wi-Fi</p></div>
+      <i class="ti ti-search ico" aria-label="Search chat"></i>
+    </div>
+
+    <div class="msgs">
+      <div class="in-b"><p class="who">Calm Panda</p><div class="bub-in">Send me the raw clips when you're ready</div></div>
+      <div class="out-b"><p class="who">You (Swift Falcon)</p><div class="bub-out">Sending now, 3 files</div><p class="status">Delivered, 4:12 PM</p></div>
+      <div class="file">
+        <div class="file-top">
+          <div class="av"><i class="ti ti-movie" style="font-size:20px" aria-hidden="true"></i></div>
+          <div class="grow"><p class="name">raw_clips_day1.mp4</p><p class="sub">Swift Falcon to Calm Panda, 412 MB, 38 MB/s</p></div>
+          <i class="ti ti-x ico" aria-label="Cancel"></i>
+        </div>
+        <div class="bar"><div></div></div>
+        <p class="sub" style="margin-top:6px">64%, about 4 s left</p>
+      </div>
+      <div class="in-b"><p class="who">Calm Panda</p><div class="bub-in">Got it, receiving</div></div>
+    </div>
+
+    <div class="compose">
+      <i class="ti ti-paperclip ico" style="font-size:20px" aria-label="Attach file"></i>
+      <input type="text" placeholder="Message Calm Panda">
+      <button class="send" aria-label="Send"><i class="ti ti-send" style="font-size:18px" aria-hidden="true"></i></button>
+    </div>
+  </section>
+
+</div>
+<script>
+var root=document.documentElement,btn=document.getElementById('tg'),ic=document.getElementById('ti');
+var saved=null;try{saved=localStorage.getItem('theme')}catch(e){}
+var t=saved||(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+function apply(v){root.setAttribute('data-theme',v);ic.className=v==='dark'?'ti ti-sun':'ti ti-moon';try{localStorage.setItem('theme',v)}catch(e){}}
+apply(t);
+btn.addEventListener('click',function(){apply(root.getAttribute('data-theme')==='dark'?'light':'dark')});
+
+// Tauri bridge for Phase 1 Scaffold
+if (window.__TAURI__ && window.__TAURI__.core) {
+  window.__TAURI__.core.invoke('get_device_info').then(function(info) {
+    if (info && info.alias) {
+      var nameEl = document.getElementById('my-alias');
+      var avEl = document.getElementById('my-avatar');
+      if (nameEl) nameEl.textContent = info.alias;
+      if (avEl) {
+        var initials = info.alias.split(' ').map(function(s){return s[0];}).join('').slice(0, 2).toUpperCase();
+        avEl.textContent = initials;
+      }
+    }
+  }).catch(function(err) {
+    console.error('Failed to get device info:', err);
+  });
+}
+</script>
+</body>
+</html>

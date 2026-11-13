@@ -17,6 +17,10 @@ const ANIMALS: &[&str] = &[
     "Cheetah", "Raven", "Penguin", "Jaguar", "Beaver", "Gazelle", "Puma", "Stag"
 ];
 
+fn default_status() -> String {
+    "available".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub device_id: String,
@@ -26,6 +30,12 @@ pub struct AppSettings {
     pub download_dir: String,
     pub theme: String, // "system", "light", "dark"
     pub instance_id: String,
+    #[serde(default = "default_status")]
+    pub status: String,
+    #[serde(default)]
+    pub status_message: String,
+    #[serde(default)]
+    pub status_expires_at: Option<u64>,
 }
 
 pub struct SettingsState {
@@ -96,7 +106,24 @@ impl SettingsState {
             download_dir: download_dir.to_string(),
             theme: "system".to_string(),
             instance_id: instance.to_string(),
+            status: "available".to_string(),
+            status_message: "".to_string(),
+            status_expires_at: None,
         }
+    }
+
+    pub fn set_presence(
+        &self,
+        status: String,
+        message: String,
+        expires_at: Option<u64>,
+    ) -> Result<AppSettings, String> {
+        let mut lock = self.settings.lock().unwrap();
+        lock.status = status;
+        lock.status_message = message;
+        lock.status_expires_at = expires_at;
+        Self::save_to_disk(&self.config_path, &lock)?;
+        Ok(lock.clone())
     }
 
     fn save_to_disk(path: &PathBuf, settings: &AppSettings) -> Result<(), String> {

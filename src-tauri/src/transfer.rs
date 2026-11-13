@@ -1,3 +1,4 @@
+use crate::db::Database;
 use crate::discovery::DiscoveryManager;
 use crate::settings::SettingsState;
 use serde::{Deserialize, Serialize};
@@ -7,7 +8,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -63,16 +64,45 @@ pub struct TransferManager {
     response_notifiers: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
     response_results: Arc<RwLock<HashMap<String, bool>>>,
     app_handle: Option<AppHandle>,
+    db: Option<Arc<Database>>,
 }
 
 impl TransferManager {
-    pub fn new(app_handle: Option<AppHandle>) -> Self {
+    pub fn new(app_handle: Option<AppHandle>, db: Option<Arc<Database>>) -> Self {
         Self {
             transfers: Arc::new(RwLock::new(HashMap::new())),
             cancellations: Arc::new(RwLock::new(HashMap::new())),
             response_notifiers: Arc::new(RwLock::new(HashMap::new())),
             response_results: Arc::new(RwLock::new(HashMap::new())),
             app_handle,
+            db,
+        }
+    }
+
+    fn maybe_record_history(&self, t: &FileTransferInfo) {
+        if let Some(ref db) = self.db {
+            let status_str = match &t.status {
+                TransferStatus::Completed => "completed",
+                TransferStatus::Declined => "declined",
+                TransferStatus::Cancelled => "cancelled",
+                TransferStatus::Failed(_) => "failed",
+                _ => return,
+            };
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            let record = crate::db::TransferRecord {
+                id: t.transfer_id.clone(),
+                peer_id: t.peer_id.clone(),
+                sender_name: t.sender_name.clone(),
+                receiver_name: t.receiver_name.clone(),
+                file_name: t.file_name.clone(),
+                file_size: t.file_size,
+                status: status_str.to_string(),
+                created_at: now_ms,
+            };
+            let _ = db.save_transfer(&record);
         }
     }
 
@@ -95,6 +125,7 @@ impl TransferManager {
             if let Some(ref handle) = self.app_handle {
                 let _ = handle.emit("file_transfer_progress", t.clone());
             }
+            self.maybe_record_history(t);
         }
     }
 
@@ -122,6 +153,9 @@ impl TransferManager {
             };
             if let Some(ref handle) = self.app_handle {
                 let _ = handle.emit("file_transfer_progress", t.clone());
+            }
+            if !accepted {
+                self.maybe_record_history(t);
             }
         }
 
@@ -157,6 +191,7 @@ impl TransferManager {
             if let Some(ref handle) = self.app_handle {
                 let _ = handle.emit("file_transfer_progress", t.clone());
             }
+            self.maybe_record_history(t);
         }
     }
 
@@ -483,4 +518,13 @@ pub async fn cancel_file_transfer(
     }
     transfer_mgr.cancel(&transfer_id);
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_transfer_history(
+    db: State<'_, Arc<Database>>,
+    limit: Option<usize>,
+) -> Result<Vec<crate::db::TransferRecord>, String> {
+    let lim = limit.unwrap_or(100);
+    db.get_transfers(lim).map_err(|e| e.to_string())
 }

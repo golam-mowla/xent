@@ -1,6 +1,6 @@
 use crate::cert::TlsCertificate;
 use crate::db::{ChatMessage, Database};
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, SettingsState};
 use crate::transfer::{FileTransferInfo, FileTransferRequest, FileTransferResponse, TransferManager, TransferStatus};
 use axum::{
     body::Bytes,
@@ -18,6 +18,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use tower_http::cors::{Any, CorsLayer};
 
+fn default_status() -> String {
+    "available".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInfoResponse {
     pub device_id: String,
@@ -26,6 +30,10 @@ pub struct DeviceInfoResponse {
     pub port: u16,
     pub fingerprint: String,
     pub protocol_version: u32,
+    #[serde(default = "default_status")]
+    pub status: String,
+    #[serde(default)]
+    pub status_message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +66,7 @@ pub struct ServerState {
     pub db: Arc<Database>,
     pub transfer_mgr: Arc<TransferManager>,
     pub app_handle: Option<AppHandle>,
+    pub settings_state: Option<Arc<SettingsState>>,
 }
 
 pub async fn start_server(
@@ -66,6 +75,7 @@ pub async fn start_server(
     db: Arc<Database>,
     transfer_mgr: Arc<TransferManager>,
     app_handle: Option<AppHandle>,
+    settings_state: Option<Arc<SettingsState>>,
 ) -> Result<u16, Box<dyn std::error::Error + Send + Sync>> {
     let state = Arc::new(ServerState {
         settings: settings.clone(),
@@ -73,6 +83,7 @@ pub async fn start_server(
         db,
         transfer_mgr,
         app_handle,
+        settings_state,
     });
 
     let app = Router::new()
@@ -132,13 +143,20 @@ async fn ping_handler() -> &'static str {
 async fn info_handler(
     State(state): State<Arc<ServerState>>,
 ) -> Json<DeviceInfoResponse> {
+    let settings = if let Some(ref st) = state.settings_state {
+        st.get_settings()
+    } else {
+        state.settings.clone()
+    };
     Json(DeviceInfoResponse {
-        device_id: state.settings.device_id.clone(),
-        alias: state.settings.alias.clone(),
-        device_type: state.settings.device_type.clone(),
-        port: state.settings.port,
+        device_id: settings.device_id,
+        alias: settings.alias,
+        device_type: settings.device_type,
+        port: settings.port,
         fingerprint: state.cert.fingerprint.clone(),
         protocol_version: 1,
+        status: settings.status,
+        status_message: settings.status_message,
     })
 }
 

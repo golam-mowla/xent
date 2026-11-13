@@ -34,10 +34,62 @@ fn get_nearby_devices(state: State<'_, Arc<DiscoveryManager>>) -> Vec<Peer> {
 #[tauri::command]
 fn update_alias(
     settings_state: State<'_, Arc<SettingsState>>,
-    _discovery_state: State<'_, Arc<DiscoveryManager>>,
+    discovery_mgr: State<'_, Arc<DiscoveryManager>>,
     alias: String,
 ) -> Result<AppSettings, String> {
     let updated = settings_state.update_alias(alias)?;
+    discovery_mgr.update_alias(updated.alias.clone());
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn set_presence(
+    settings_state: State<'_, Arc<SettingsState>>,
+    discovery_mgr: State<'_, Arc<DiscoveryManager>>,
+    status: String,
+    message: String,
+    clear_after: String,
+) -> Result<AppSettings, String> {
+    let valid_statuses = ["available", "busy", "away", "offline"];
+    if !valid_statuses.contains(&status.as_str()) {
+        return Err(format!(
+            "Invalid status: {}. Allowed values: available, busy, away, offline",
+            status
+        ));
+    }
+
+    let trimmed_msg = message.trim();
+    let truncated_msg = if trimmed_msg.chars().count() > 80 {
+        trimmed_msg.chars().take(80).collect::<String>()
+    } else {
+        trimmed_msg.to_string()
+    };
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let expires_at = match clear_after.as_str() {
+        "1h" => Some(now_secs + 3600),
+        "4h" => Some(now_secs + 4 * 3600),
+        "today" => {
+            let now_local = chrono::Local::now();
+            let midnight = now_local
+                .date_naive()
+                .and_hms_opt(23, 59, 59)
+                .and_then(|t| t.and_local_timezone(chrono::Local).single());
+            if let Some(m) = midnight {
+                Some(m.timestamp() as u64)
+            } else {
+                Some(now_secs + 24 * 3600)
+            }
+        }
+        _ => None,
+    };
+
+    let updated = settings_state.set_presence(status.clone(), truncated_msg.clone(), expires_at)?;
+    discovery_mgr.set_presence(status, truncated_msg, expires_at).await;
     Ok(updated)
 }
 
@@ -92,7 +144,10 @@ pub fn run() {
             let settings_state_for_server = settings_state_for_setup.clone();
             let handle_for_server = handle.clone();
 
-            let transfer_mgr = Arc::new(TransferManager::new(Some(handle.clone())));
+            let transfer_mgr = Arc::new(TransferManager::new(
+                Some(handle.clone()),
+                Some(db_for_server.clone()),
+            ));
             handle.manage(transfer_mgr.clone());
 
             let transfer_mgr_for_server = transfer_mgr.clone();
@@ -153,6 +208,7 @@ pub fn run() {
                     db_for_server,
                     transfer_mgr_for_server,
                     Some(handle_for_server),
+                    Some(settings_state_for_server.clone()),
                 )
                 .await
                 {
@@ -172,6 +228,7 @@ pub fn run() {
                     current_settings,
                     cert_for_server.fingerprint,
                     Some(handle.clone()),
+                    Some(settings_state_for_server.clone()),
                 ));
 
                 handle.manage(discovery_mgr.clone());
@@ -193,6 +250,7 @@ pub fn run() {
             get_nearby_devices,
             update_alias,
             update_settings,
+            set_presence,
             chat::send_chat_message,
             chat::get_chat_history,
             chat::mark_thread_read,
@@ -201,7 +259,8 @@ pub fn run() {
             transfer::send_file_request,
             transfer::respond_file_transfer,
             transfer::start_file_upload,
-            transfer::cancel_file_transfer
+            transfer::cancel_file_transfer,
+            transfer::get_transfer_history
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -1,4 +1,4 @@
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, SettingsState};
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
@@ -11,6 +11,10 @@ use tokio::net::UdpSocket;
 pub const MULTICAST_IPV4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 167);
 pub const MULTICAST_PORT: u16 = 53317;
 
+fn default_status() -> String {
+    "available".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryPacket {
     pub msg_type: String, // "announce" | "reply" | "bye"
@@ -20,6 +24,10 @@ pub struct DiscoveryPacket {
     pub port: u16,
     pub fingerprint: String,
     pub protocol_version: u32,
+    #[serde(default = "default_status")]
+    pub status: String,
+    #[serde(default)]
+    pub status_message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,22 +39,48 @@ pub struct Peer {
     pub port: u16,
     pub fingerprint: String,
     pub last_seen: u64,
+    pub status: String,
+    pub status_message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalPresence {
+    pub alias: String,
+    pub status: String,
+    pub status_message: String,
+    pub status_expires_at: Option<u64>,
 }
 
 pub struct DiscoveryManager {
     peers: Arc<RwLock<HashMap<String, Peer>>>,
     settings: AppSettings,
+    presence: Arc<RwLock<LocalPresence>>,
     fingerprint: String,
     app_handle: Option<AppHandle>,
+    settings_state: Option<Arc<SettingsState>>,
 }
 
 impl DiscoveryManager {
-    pub fn new(settings: AppSettings, fingerprint: String, app_handle: Option<AppHandle>) -> Self {
+    pub fn new(
+        settings: AppSettings,
+        fingerprint: String,
+        app_handle: Option<AppHandle>,
+        settings_state: Option<Arc<SettingsState>>,
+    ) -> Self {
+        let presence = Arc::new(RwLock::new(LocalPresence {
+            alias: settings.alias.clone(),
+            status: settings.status.clone(),
+            status_message: settings.status_message.clone(),
+            status_expires_at: settings.status_expires_at,
+        }));
+
         Self {
             peers: Arc::new(RwLock::new(HashMap::new())),
             settings,
+            presence,
             fingerprint,
             app_handle,
+            settings_state,
         }
     }
 
@@ -55,8 +89,24 @@ impl DiscoveryManager {
         lock.values().cloned().collect()
     }
 
-    pub fn update_alias(&mut self, new_alias: String) {
-        self.settings.alias = new_alias;
+    pub fn update_alias(&self, new_alias: String) {
+        let mut p = self.presence.write().unwrap();
+        p.alias = new_alias;
+    }
+
+    pub async fn set_presence(&self, status: String, message: String, expires_at: Option<u64>) {
+        {
+            let mut p = self.presence.write().unwrap();
+            p.status = status.clone();
+            p.status_message = message;
+            p.status_expires_at = expires_at;
+        }
+
+        if status == "offline" {
+            self.send_bye().await;
+        } else {
+            self.send_multicast_announce("announce").await;
+        }
     }
 
     pub fn start(self: Arc<Self>) {
@@ -142,6 +192,12 @@ impl DiscoveryManager {
                             }
                         } else if packet.msg_type == "announce" || packet.msg_type == "reply" {
                             let now = Self::now_secs();
+                            let peer_status = if packet.status.trim().is_empty() {
+                                "available".to_string()
+                            } else {
+                                packet.status.clone()
+                            };
+
                             let peer = Peer {
                                 device_id: packet.device_id.clone(),
                                 alias: packet.alias.clone(),
@@ -150,6 +206,8 @@ impl DiscoveryManager {
                                 port: packet.port,
                                 fingerprint: packet.fingerprint.clone(),
                                 last_seen: now,
+                                status: peer_status,
+                                status_message: packet.status_message.clone(),
                             };
 
                             let mut changed = false;
@@ -157,14 +215,24 @@ impl DiscoveryManager {
                                 let mut lock = self.peers.write().unwrap();
                                 if let Some(existing) = lock.get_mut(&packet.device_id) {
                                     existing.last_seen = now;
-                                    if existing.alias != peer.alias || existing.port != peer.port {
+                                    if existing.alias != peer.alias
+                                        || existing.port != peer.port
+                                        || existing.fingerprint != peer.fingerprint
+                                        || existing.status != peer.status
+                                        || existing.status_message != peer.status_message
+                                    {
                                         existing.alias = peer.alias;
                                         existing.port = peer.port;
                                         existing.fingerprint = peer.fingerprint;
+                                        existing.status = peer.status;
+                                        existing.status_message = peer.status_message;
                                         changed = true;
                                     }
                                 } else {
-                                    println!("[Discovery] Discovered new peer: {} ({}) at {}:{}", peer.alias, peer.device_id, peer.ip, peer.port);
+                                    println!(
+                                        "[Discovery] Discovered new peer: {} ({}) at {}:{}",
+                                        peer.alias, peer.device_id, peer.ip, peer.port
+                                    );
                                     lock.insert(packet.device_id.clone(), peer);
                                     changed = true;
                                 }
@@ -176,18 +244,24 @@ impl DiscoveryManager {
 
                             // If this was an announce packet, send a reply back so they know us immediately
                             if packet.msg_type == "announce" {
-                                let reply_packet = DiscoveryPacket {
-                                    msg_type: "reply".to_string(),
-                                    device_id: self.settings.device_id.clone(),
-                                    alias: self.settings.alias.clone(),
-                                    device_type: self.settings.device_type.clone(),
-                                    port: self.settings.port,
-                                    fingerprint: self.fingerprint.clone(),
-                                    protocol_version: 1,
-                                };
-                                if let Ok(data) = serde_json::to_vec(&reply_packet) {
-                                    let target_multicast = SocketAddr::V4(SocketAddrV4::new(MULTICAST_IPV4, MULTICAST_PORT));
-                                    let _ = tokio_socket.send_to(&data, target_multicast).await;
+                                let current_presence = self.presence.read().unwrap().clone();
+                                if current_presence.status != "offline" {
+                                    let reply_packet = DiscoveryPacket {
+                                        msg_type: "reply".to_string(),
+                                        device_id: self.settings.device_id.clone(),
+                                        alias: current_presence.alias,
+                                        device_type: self.settings.device_type.clone(),
+                                        port: self.settings.port,
+                                        fingerprint: self.fingerprint.clone(),
+                                        protocol_version: 1,
+                                        status: current_presence.status,
+                                        status_message: current_presence.status_message,
+                                    };
+                                    if let Ok(data) = serde_json::to_vec(&reply_packet) {
+                                        let target_multicast =
+                                            SocketAddr::V4(SocketAddrV4::new(MULTICAST_IPV4, MULTICAST_PORT));
+                                        let _ = tokio_socket.send_to(&data, target_multicast).await;
+                                    }
                                 }
                             }
                         }
@@ -215,7 +289,10 @@ impl DiscoveryManager {
 
         // Initial rapid announces on startup
         for _ in 0..3 {
-            self.send_announce(&sender, target, "announce").await;
+            let status = self.presence.read().unwrap().status.clone();
+            if status != "offline" {
+                self.send_announce(&sender, target, "announce").await;
+            }
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
 
@@ -223,19 +300,25 @@ impl DiscoveryManager {
         let mut interval = tokio::time::interval(Duration::from_secs(3));
         loop {
             interval.tick().await;
-            self.send_announce(&sender, target, "announce").await;
+            let status = self.presence.read().unwrap().status.clone();
+            if status != "offline" {
+                self.send_announce(&sender, target, "announce").await;
+            }
         }
     }
 
     async fn send_announce(&self, sender: &UdpSocket, target: SocketAddr, msg_type: &str) {
+        let pres = self.presence.read().unwrap().clone();
         let packet = DiscoveryPacket {
             msg_type: msg_type.to_string(),
             device_id: self.settings.device_id.clone(),
-            alias: self.settings.alias.clone(),
+            alias: pres.alias,
             device_type: self.settings.device_type.clone(),
             port: self.settings.port,
             fingerprint: self.fingerprint.clone(),
             protocol_version: 1,
+            status: pres.status,
+            status_message: pres.status_message,
         };
 
         if let Ok(bytes) = serde_json::to_vec(&packet) {
@@ -243,18 +326,29 @@ impl DiscoveryManager {
         }
     }
 
+    pub async fn send_multicast_announce(&self, msg_type: &str) {
+        if let Ok(sender) = UdpSocket::bind("0.0.0.0:0").await {
+            let _ = sender.set_multicast_loop_v4(true);
+            let target = SocketAddr::V4(SocketAddrV4::new(MULTICAST_IPV4, MULTICAST_PORT));
+            self.send_announce(&sender, target, msg_type).await;
+        }
+    }
+
     pub async fn send_bye(&self) {
+        let pres = self.presence.read().unwrap().clone();
         if let Ok(sender) = UdpSocket::bind("0.0.0.0:0").await {
             let _ = sender.set_multicast_loop_v4(true);
             let target = SocketAddr::V4(SocketAddrV4::new(MULTICAST_IPV4, MULTICAST_PORT));
             let packet = DiscoveryPacket {
                 msg_type: "bye".to_string(),
                 device_id: self.settings.device_id.clone(),
-                alias: self.settings.alias.clone(),
+                alias: pres.alias,
                 device_type: self.settings.device_type.clone(),
                 port: self.settings.port,
                 fingerprint: self.fingerprint.clone(),
                 protocol_version: 1,
+                status: "offline".to_string(),
+                status_message: "".to_string(),
             };
             if let Ok(bytes) = serde_json::to_vec(&packet) {
                 let _ = sender.send_to(&bytes, target).await;
@@ -267,6 +361,36 @@ impl DiscoveryManager {
         loop {
             interval.tick().await;
             let now = Self::now_secs();
+
+            // Check presence expiration
+            let mut expired = false;
+            let mut updated_settings_opt = None;
+            {
+                let mut p = self.presence.write().unwrap();
+                if let Some(exp) = p.status_expires_at {
+                    if now >= exp {
+                        p.status = "available".to_string();
+                        p.status_message = "".to_string();
+                        p.status_expires_at = None;
+                        expired = true;
+                    }
+                }
+            }
+
+            if expired {
+                if let Some(ref st) = self.settings_state {
+                    if let Ok(updated) = st.set_presence("available".to_string(), "".to_string(), None) {
+                        updated_settings_opt = Some(updated);
+                    }
+                }
+                self.send_multicast_announce("announce").await;
+                if let Some(ref handle) = self.app_handle {
+                    if let Some(updated) = updated_settings_opt {
+                        let _ = handle.emit("presence_changed", updated);
+                    }
+                }
+            }
+
             let mut removed = false;
             {
                 let mut lock = self.peers.write().unwrap();

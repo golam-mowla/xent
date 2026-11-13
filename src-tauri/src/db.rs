@@ -20,6 +20,18 @@ pub struct ChatMessage {
     pub is_read: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferRecord {
+    pub id: String,
+    pub peer_id: String,
+    pub sender_name: String,
+    pub receiver_name: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub status: String, // "completed", "declined", "cancelled", "failed"
+    pub created_at: i64,
+}
+
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
 }
@@ -55,7 +67,18 @@ impl Database {
                 is_read INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_thread ON messages(thread_peer_id, created_at);
-            CREATE INDEX IF NOT EXISTS idx_unread ON messages(is_read, is_incoming);"
+            CREATE INDEX IF NOT EXISTS idx_unread ON messages(is_read, is_incoming);
+            CREATE TABLE IF NOT EXISTS transfers (
+                id TEXT PRIMARY KEY,
+                peer_id TEXT NOT NULL,
+                sender_name TEXT NOT NULL,
+                receiver_name TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_transfers_created ON transfers(created_at DESC);"
         )?;
 
         Ok(Self {
@@ -159,5 +182,55 @@ impl Database {
             map.insert(k, v);
         }
         Ok(map)
+    }
+
+    pub fn save_transfer(&self, record: &TransferRecord) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO transfers 
+            (id, peer_id, sender_name, receiver_name, file_name, file_size, status, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                record.id,
+                record.peer_id,
+                record.sender_name,
+                record.receiver_name,
+                record.file_name,
+                record.file_size as i64,
+                record.status,
+                record.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_transfers(&self, limit: usize) -> Result<Vec<TransferRecord>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, peer_id, sender_name, receiver_name, file_name, file_size, status, created_at
+             FROM transfers
+             ORDER BY created_at DESC
+             LIMIT ?1"
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            let file_size_i64: i64 = row.get(5)?;
+            Ok(TransferRecord {
+                id: row.get(0)?,
+                peer_id: row.get(1)?,
+                sender_name: row.get(2)?,
+                receiver_name: row.get(3)?,
+                file_name: row.get(4)?,
+                file_size: file_size_i64.max(0) as u64,
+                status: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })?;
+
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r?);
+        }
+        Ok(results)
     }
 }

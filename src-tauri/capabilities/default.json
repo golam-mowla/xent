@@ -6,9 +6,6 @@
     "*"
   ],
   "permissions": [
-    "core:default",
-    "notification:default",
-    "dialog:default",
-    "fs:default"
+    "core:default"
   ]
 }

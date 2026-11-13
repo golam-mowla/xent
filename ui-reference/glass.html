@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Xent glass preview</title>
+<style>
+:root{--ac:#6C5CE7;--ac2:#8B7DFF;--tx:#1E1B3A;--tx2:#5E5A86;--glass:rgba(255,255,255,.55);--glass2:rgba(255,255,255,.7);--line:rgba(255,255,255,.75);--shadow:0 8px 32px rgba(76,60,160,.18);--in:rgba(255,255,255,.6);--sel:rgba(108,92,231,.14);--b1:#B9ADFF;--b2:#FFB3CF;--b3:#9CCBFF;--base:#EEEBFF;--ok:#1D9E75;--busy:#E24B4A;--away:#EF9F27;--off:#9A98A8;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--tx:#F1EFFF;--tx2:#A9A6CC;--glass:rgba(30,28,52,.5);--glass2:rgba(40,37,70,.65);--line:rgba(255,255,255,.14);--shadow:0 8px 32px rgba(0,0,0,.4);--in:rgba(255,255,255,.07);--sel:rgba(139,125,255,.22);--b1:#4A3FBF;--b2:#8A2F5C;--b3:#1F4F8F;--base:#12111C}}
+:root[data-theme="dark"]{--tx:#F1EFFF;--tx2:#A9A6CC;--glass:rgba(30,28,52,.5);--glass2:rgba(40,37,70,.65);--line:rgba(255,255,255,.14);--shadow:0 8px 32px rgba(0,0,0,.4);--in:rgba(255,255,255,.07);--sel:rgba(139,125,255,.22);--b1:#4A3FBF;--b2:#8A2F5C;--b3:#1F4F8F;--base:#12111C}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--tx);font-size:13px;background:radial-gradient(520px 420px at 12% 18%,var(--b1),transparent 70%),radial-gradient(480px 420px at 88% 22%,var(--b2),transparent 70%),radial-gradient(560px 460px at 55% 95%,var(--b3),transparent 70%),var(--base);background-attachment:fixed}
+p{margin:0}
+svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.shell{display:grid;grid-template-columns:64px 260px minmax(0,1fr);gap:12px;padding:14px;height:100%;min-height:600px;max-width:1180px;margin:0 auto}
+.g{background:var(--glass);backdrop-filter:blur(24px) saturate(160%);-webkit-backdrop-filter:blur(24px) saturate(160%);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow)}
+@media (prefers-reduced-transparency:reduce){.g{backdrop-filter:none;-webkit-backdrop-filter:none;background:var(--glass2)}}
+.rail{display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 0}
+.rb{width:40px;height:40px;border-radius:12px;border:0;background:transparent;color:var(--tx2);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.rb.on{background:var(--sel);color:var(--ac)}
+.rb:hover{background:var(--in)}
+.sp{flex:1}
+.list{padding:12px 10px;display:flex;flex-direction:column;gap:4px;min-height:0;overflow:hidden}
+.me{display:flex;align-items:center;gap:10px;padding:8px;border-radius:14px;cursor:pointer;border:0;background:var(--in);color:inherit;text-align:left;width:100%;font:inherit}
+.av{position:relative;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:12px;flex:none;color:#fff}
+.dot{position:absolute;right:-1px;bottom:-1px;width:12px;height:12px;border-radius:50%;border:2px solid var(--glass2);background:var(--ok)}
+.t{font-weight:600;font-size:13px;line-height:1.3}
+.s{font-size:11.5px;color:var(--tx2);line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grow{min-width:0;flex:1}
+.menu{display:none;padding:6px;border-radius:14px;background:var(--glass2);border:1px solid var(--line);margin:4px 0}
+.menu.open{display:block}
+.mi{display:flex;gap:10px;align-items:center;width:100%;border:0;background:transparent;color:inherit;font:inherit;padding:7px 8px;border-radius:9px;cursor:pointer;text-align:left}
+.mi:hover{background:var(--sel)}
+.pd{width:10px;height:10px;border-radius:50%;flex:none}
+.msgin{display:none;gap:6px;padding:4px 2px}
+.msgin.open{display:flex}
+.msgin input{flex:1;min-width:0;border:1px solid var(--line);background:var(--in);color:var(--tx);border-radius:9px;padding:7px 10px;font:inherit;outline:none}
+.btn{border:0;border-radius:9px;padding:7px 12px;background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;font:inherit;font-weight:600;cursor:pointer}
+.btn.ghost{background:var(--in);color:var(--tx)}
+.lbl{font-size:11px;letter-spacing:.04em;color:var(--tx2);padding:10px 8px 4px;text-transform:uppercase}
+.row{display:flex;gap:10px;align-items:center;padding:8px;border-radius:14px;cursor:pointer}
+.row:hover{background:var(--in)}
+.row.sel{background:var(--sel)}
+.badge{min-width:18px;height:18px;border-radius:9px;background:#D4537E;color:#fff;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;padding:0 5px}
+.chat{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.hd{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
+.msgs{flex:1;padding:18px;display:flex;flex-direction:column;gap:12px;overflow:auto}
+.who{font-size:11px;color:var(--tx2);margin:0 4px 3px}
+.bin{align-self:flex-start;max-width:72%}
+.bin .b{background:var(--in);border:1px solid var(--line);padding:9px 13px;border-radius:16px 16px 16px 5px}
+.bout{align-self:flex-end;max-width:72%;text-align:right}
+.bout .b{background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;padding:9px 13px;border-radius:16px 16px 5px 16px;text-align:left;display:inline-block}
+.fc{align-self:flex-start;width:min(330px,100%);padding:12px;border-radius:16px;background:var(--in);border:1px solid var(--line)}
+.fr{display:flex;gap:10px;align-items:center}
+.fi{width:38px;height:38px;border-radius:10px;background:var(--sel);color:var(--ac);display:flex;align-items:center;justify-content:center;flex:none}
+.bar{height:5px;border-radius:3px;background:var(--in);margin-top:8px;overflow:hidden}
+.bar b{display:block;height:100%;width:64%;border-radius:3px;background:linear-gradient(90deg,var(--ac),var(--ac2))}
+.acts{display:flex;gap:8px;margin-top:10px}
+.cmp{display:flex;gap:10px;align-items:center;padding:12px 16px;border-top:1px solid var(--line)}
+.cmp .f{flex:1;background:var(--in);border:1px solid var(--line);border-radius:14px;padding:10px 14px;color:var(--tx2)}
+.ico{background:none;border:0;color:var(--tx2);cursor:pointer;display:flex;padding:4px}
+.snd{width:38px;height:38px;border-radius:12px;border:0;background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
+@media (max-width:820px){.shell{grid-template-columns:1fr;height:auto}.rail{flex-direction:row;justify-content:center;padding:8px}.sp{display:none}.chat{min-height:520px}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+<symbol id="radar" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 12l6-6"/></symbol>
+<symbol id="folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+<symbol id="set" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
+<symbol id="clip" viewBox="0 0 24 24"><path d="M15 7l-6.5 6.5a2 2 0 0 0 3 3L18 10a4 4 0 0 0-6-6L5.5 10.5a6 6 0 0 0 9 9L20 14"/></symbol>
+<symbol id="send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-3-7z"/></symbol>
+<symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+<symbol id="file" viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/></symbol>
+<symbol id="pen" viewBox="0 0 24 24"><path d="M4 20l1-4L16 5l3 3L8 19z"/></symbol>
+<symbol id="moon" viewBox="0 0 24 24"><path d="M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10z"/></symbol>
+</svg>
+<main class="shell">
+  <nav class="g rail" aria-label="Main">
+    <button class="rb on" aria-label="Chat"><svg class="i"><use href="#chat"/></svg></button>
+    <button class="rb" aria-label="Nearby"><svg class="i"><use href="#radar"/></svg></button>
+    <button class="rb" aria-label="Files"><svg class="i"><use href="#folder"/></svg></button>
+    <span class="sp"></span>
+    <button class="rb" id="theme" aria-label="Toggle theme"><svg class="i"><use href="#moon"/></svg></button>
+    <button class="rb" aria-label="Settings"><svg class="i"><use href="#set"/></svg></button>
+  </nav>
+
+  <aside class="g list">
+    <button class="me" id="meBtn" aria-expanded="false">
+      <div class="av" style="background:linear-gradient(135deg,#6C5CE7,#D4537E)">SP<span class="dot" id="meDot"></span></div>
+      <div class="grow"><p class="t">Silver Penguin</p><p class="s" id="meTxt">Available</p></div>
+    </button>
+    <div class="menu" id="menu">
+      <button class="mi" data-k="ok" data-l="Available"><span class="pd" style="background:var(--ok)"></span>Available</button>
+      <button class="mi" data-k="busy" data-l="Busy"><span class="pd" style="background:var(--busy)"></span>Busy</button>
+      <button class="mi" data-k="away" data-l="Be right back"><span class="pd" style="background:var(--away)"></span>Be right back</button>
+      <button class="mi" data-k="off" data-l="Appear offline"><span class="pd" style="background:var(--off)"></span>Appear offline</button>
+      <button class="mi" id="msgBtn"><svg class="i" style="width:16px;height:16px"><use href="#pen"/></svg>Set status message</button>
+      <div class="msgin" id="msgIn"><input id="msgTxt" maxlength="80" placeholder="What’s your status?" aria-label="Status message"><button class="btn" id="msgSave">Save</button></div>
+    </div>
+    <p class="lbl">Nearby on this Wi-Fi</p>
+    <div class="row sel"><div class="av" style="background:#1D9E75">RS<span class="dot" style="background:var(--ok)"></span></div><div class="grow"><p class="t">Radiant Stag</p><p class="s">Working on the Q4 report</p></div><span class="badge">2</span></div>
+    <div class="row"><div class="av" style="background:#D85A30">KB<span class="dot" style="background:var(--busy)"></span></div><div class="grow"><p class="t">Keen Beaver</p><p class="s">In a meeting until 3 PM</p></div></div>
+    <div class="row"><div class="av" style="background:#378ADD">CP<span class="dot" style="background:var(--away)"></span></div><div class="grow"><p class="t">Calm Panda</p><p class="s">Be right back</p></div></div>
+    <div class="row"><div class="av" style="background:#D4537E">BF<span class="dot" style="background:var(--off)"></span></div><div class="grow"><p class="t">Brave Fox</p><p class="s">Offline</p></div></div>
+  </aside>
+
+  <section class="g chat">
+    <header class="hd">
+      <div class="av" style="background:#1D9E75">RS<span class="dot" style="background:var(--ok)"></span></div>
+      <div class="grow"><p class="t" style="font-size:15px">Radiant Stag</p><p class="s"><span style="color:var(--ok);font-weight:600">Available</span> · Working on the Q4 report</p></div>
+      <button class="ico" aria-label="Attach"><svg class="i"><use href="#clip"/></svg></button>
+    </header>
+    <div class="msgs">
+      <div class="bin"><p class="who">Radiant Stag</p><div class="b">Is the report ready? Share it when you can.</div></div>
+      <div class="bout"><p class="who">You (Silver Penguin)</p><div class="b">One minute, sending it now.</div><p class="s" style="margin-top:3px">Delivered, 2:41 PM</p></div>
+      <div class="fc">
+        <div class="fr"><div class="fi"><svg class="i"><use href="#file"/></svg></div><div class="grow"><p class="t">Q4-report.pdf</p><p class="s">Silver Penguin to Radiant Stag · 12.4 MB · 4.1 MB/s · 2s left</p></div><button class="ico" aria-label="Cancel"><svg class="i" style="width:16px;height:16px"><use href="#x"/></svg></button></div>
+        <div class="bar"><b></b></div>
+      </div>
+      <div class="fc">
+        <div class="fr"><div class="fi"><svg class="i"><use href="#file"/></svg></div><div class="grow"><p class="t">budget-draft.xlsx</p><p class="s">Radiant Stag to Silver Penguin · 2.1 MB · Incoming file offer</p></div></div>
+        <div class="acts"><button class="btn">Accept</button><button class="btn ghost">Decline</button></div>
+      </div>
+    </div>
+    <footer class="cmp"><button class="ico" aria-label="Attach file"><svg class="i"><use href="#clip"/></svg></button><div class="f">Type a message</div><button class="snd" aria-label="Send"><svg class="i"><use href="#send"/></svg></button></footer>
+  </section>
+</main>
+<script>
+var dot=document.getElementById('meDot'),txt=document.getElementById('meTxt'),menu=document.getElementById('menu'),btn=document.getElementById('meBtn'),msgIn=document.getElementById('msgIn');
+var cur={k:'ok',l:'Available',m:''};
+function paint(){dot.style.background='var(--'+cur.k+')';txt.textContent=cur.m?cur.l+' · '+cur.m:cur.l}
+btn.addEventListener('click',function(){var o=menu.classList.toggle('open');btn.setAttribute('aria-expanded',o)});
+document.querySelectorAll('.mi[data-k]').forEach(function(b){b.addEventListener('click',function(){cur.k=b.dataset.k;cur.l=b.dataset.l;paint()})});
+document.getElementById('msgBtn').addEventListener('click',function(){msgIn.classList.toggle('open');document.getElementById('msgTxt').focus()});
+document.getElementById('msgSave').addEventListener('click',function(){cur.m=document.getElementById('msgTxt').value.trim();paint();msgIn.classList.remove('open');menu.classList.remove('open')});
+document.getElementById('theme').addEventListener('click',function(){var r=document.documentElement,d=r.getAttribute('data-theme');var dark=d?d==='dark':matchMedia('(prefers-color-scheme: dark)').matches;r.setAttribute('data-theme',dark?'light':'dark')});
+</script>
+</body>
+</html>

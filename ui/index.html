@@ -41,7 +41,7 @@ body{
 p{margin:0}
 .shell{
   display:grid;grid-template-columns:64px 260px minmax(0,1fr);
-  gap:12px;padding:14px;height:100%;min-height:600px;max-width:1180px;margin:0 auto
+  gap:12px;padding:14px;height:100%;min-height:600px;max-width:1180px;margin:0 auto;position:relative
 }
 .g{
   background:var(--glass);backdrop-filter:blur(24px) saturate(160%);
@@ -100,10 +100,14 @@ p{margin:0}
 .btn{
   border:0;border-radius:9px;padding:7px 12px;
   background:linear-gradient(135deg,var(--ac),var(--ac2));
-  color:#fff;font:inherit;font-weight:600;cursor:pointer
+  color:#fff;font:inherit;font-weight:600;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  transition:opacity 150ms ease
 }
-.btn.ghost{background:var(--in);color:var(--tx)}
-.lbl{font-size:11px;letter-spacing:.04em;color:var(--tx2);padding:10px 8px 4px;text-transform:uppercase}
+.btn:hover{opacity:0.9}
+.btn.ghost{background:var(--in);color:var(--tx);border:1px solid var(--line)}
+.btn.ghost:hover{background:var(--sel)}
+.lbl{font-size:11px;letter-spacing:.04em;color:var(--tx2);padding:8px 8px 4px;text-transform:uppercase}
 .row{display:flex;gap:10px;align-items:center;padding:8px;border-radius:14px;cursor:pointer;transition:background 150ms ease}
 .row:hover{background:var(--in)}
 .row.sel{background:var(--sel)}
@@ -112,34 +116,55 @@ p{margin:0}
   color:#fff;font-size:11px;font-weight:600;display:flex;align-items:center;
   justify-content:center;padding:0 5px
 }
-.chat{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.chat{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;position:relative}
 .hd{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
-.msgs{flex:1;padding:18px;display:flex;flex-direction:column;gap:12px;overflow:auto}
+.msgs{flex:1;padding:18px;display:flex;flex-direction:column;gap:10px;overflow:auto}
 .load-more-btn{
   align-self:center;background:var(--in);border:1px solid var(--line);
   color:var(--tx2);padding:6px 14px;border-radius:12px;font:inherit;
   font-size:11.5px;cursor:pointer;margin-bottom:8px
 }
 .load-more-btn:hover{background:var(--sel);color:var(--ac)}
+.date-sep{
+  align-self:center;margin:6px 0;padding:3px 12px;background:var(--in);
+  border:1px solid var(--line);border-radius:10px;font-size:11px;color:var(--tx2);font-weight:600
+}
 .who{font-size:11px;color:var(--tx2);margin:0 4px 3px}
-.bin{align-self:flex-start;max-width:72%}
+.msg-wrap{position:relative;display:flex;flex-direction:column}
+.bin{align-self:flex-start;max-width:75%}
 .bin .b{background:var(--in);border:1px solid var(--line);padding:9px 13px;border-radius:16px 16px 16px 5px;word-break:break-word}
-.bout{align-self:flex-end;max-width:72%;text-align:right}
+.bout{align-self:flex-end;max-width:75%;text-align:right}
 .bout .b{
   background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;
   padding:9px 13px;border-radius:16px 16px 5px 16px;text-align:left;
   display:inline-block;word-break:break-word
 }
+.quote-banner{
+  padding:4px 8px;border-left:3px solid var(--ac);background:rgba(0,0,0,0.06);
+  border-radius:4px;margin-bottom:6px;font-size:11px;opacity:0.9
+}
+.bubble-acts{
+  display:none;position:absolute;top:-12px;right:4px;gap:2px;
+  background:var(--glass2);border:1px solid var(--line);border-radius:12px;padding:2px 4px;box-shadow:var(--shadow)
+}
+.msg-wrap:hover .bubble-acts{display:flex}
+.react-bar{display:flex;gap:4px;margin-top:4px;flex-wrap:wrap}
+.react-pill{
+  background:var(--in);border:1px solid var(--line);border-radius:8px;
+  padding:2px 6px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:3px
+}
+.react-pill:hover{background:var(--sel)}
 .fc{align-self:flex-start;width:min(340px,100%);padding:12px;border-radius:16px;background:var(--in);border:1px solid var(--line)}
 .fr{display:flex;gap:10px;align-items:center}
 .fi{width:38px;height:38px;border-radius:10px;background:var(--sel);color:var(--ac);display:flex;align-items:center;justify-content:center;flex:none}
 .bar{height:5px;border-radius:3px;background:var(--in);margin-top:8px;overflow:hidden}
 .bar b{display:block;height:100%;width:0%;border-radius:3px;background:linear-gradient(90deg,var(--ac),var(--ac2));transition:width 0.2s ease}
-.acts{display:flex;gap:8px;margin-top:10px}
-.cmp{display:flex;gap:10px;align-items:center;padding:12px 16px;border-top:1px solid var(--line)}
+.acts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.cmp-wrap{display:flex;flex-direction:column;border-top:1px solid var(--line);background:transparent}
+.cmp{display:flex;gap:8px;align-items:center;padding:10px 14px}
 .cmp input.f{flex:1;background:var(--in);border:1px solid var(--line);border-radius:14px;padding:10px 14px;color:var(--tx);font:inherit;outline:none}
 .cmp input.f::placeholder{color:var(--tx2)}
-.ico{background:none;border:0;color:var(--tx2);cursor:pointer;display:flex;padding:4px;border-radius:8px;transition:opacity 150ms ease}
+.ico{background:none;border:0;color:var(--tx2);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:6px;border-radius:8px;transition:opacity 150ms ease}
 .ico:hover{color:var(--tx);background:var(--in)}
 .snd{
   width:38px;height:38px;border-radius:12px;border:0;
@@ -153,41 +178,51 @@ p{margin:0}
   .chat{min-height:520px}
 }
 
-/* Glass Settings Modal */
+/* Modals */
 .modal-backdrop{
   display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);
-  z-index:99;align-items:center;justify-content:center;
+  z-index:999;align-items:center;justify-content:center;
   backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)
 }
 .modal-backdrop.show{display:flex}
 .modal-box{
   background:var(--glass2);border:1px solid var(--line);border-radius:20px;
-  width:380px;padding:22px;display:flex;flex-direction:column;gap:14px;
-  box-shadow:var(--shadow)
+  width:min(480px,94vw);padding:20px;display:flex;flex-direction:column;gap:12px;
+  box-shadow:var(--shadow);max-height:88vh;overflow-y:auto
 }
 .modal-input{
   width:100%;background:var(--in);color:var(--tx);border:1px solid var(--line);
   border-radius:10px;padding:8px 12px;font:inherit;outline:none
 }
+.nav-tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.nav-tab{background:transparent;border:0;color:var(--tx2);font:inherit;font-weight:600;padding:6px 10px;border-radius:8px;cursor:pointer}
+.nav-tab.active{background:var(--sel);color:var(--ac)}
+.tab-pane{display:none;flex-direction:column;gap:12px}
+.tab-pane.active{display:flex}
 </style>
 </head>
 <body>
 
+<!-- Backend Warning Banner -->
+<div id="backend-banner" style="display:none;background:#e24b4a;color:#fff;padding:8px 16px;text-align:center;font-size:12px;font-weight:600;position:fixed;top:0;left:0;right:0;z-index:99999;box-shadow:0 2px 10px rgba(0,0,0,0.25)">
+  ⚠️ Backend not connected: <code>window.__TAURI__</code> is undefined. Ensure app runs inside Tauri with <code>withGlobalTauri: true</code>.
+</div>
+
 <main class="shell">
   <!-- Left Rail Navigation -->
   <nav class="g rail" aria-label="Main navigation">
-    <button class="rb on" id="tab-chat" aria-label="Chat"><i class="ti ti-message-circle" style="font-size:20px"></i></button>
-    <button class="rb" id="tab-nearby" aria-label="Nearby"><i class="ti ti-radar-2" style="font-size:20px"></i></button>
-    <button class="rb" id="tab-files" aria-label="Files"><i class="ti ti-folder" style="font-size:20px"></i></button>
+    <button class="rb on" id="tab-chat" aria-label="Chat" title="Chat"><i class="ti ti-message-circle" style="font-size:20px"></i></button>
+    <button class="rb" id="tab-nearby" aria-label="Nearby" title="Nearby Devices"><i class="ti ti-radar-2" style="font-size:20px"></i></button>
+    <button class="rb" id="tab-files" aria-label="Files" title="Transfer History"><i class="ti ti-folder" style="font-size:20px"></i></button>
     <span class="sp"></span>
-    <button class="rb" id="theme" aria-label="Toggle theme"><i class="ti ti-moon" id="theme-icon" style="font-size:20px"></i></button>
-    <button class="rb" id="btn-settings" aria-label="Settings"><i class="ti ti-adjustments-horizontal" style="font-size:20px"></i></button>
+    <button class="rb" id="theme" aria-label="Toggle theme" title="Toggle Light/Dark"><i class="ti ti-moon" id="theme-icon" style="font-size:20px"></i></button>
+    <button class="rb" id="btn-settings" aria-label="Settings" title="Settings"><i class="ti ti-adjustments-horizontal" style="font-size:20px"></i></button>
   </nav>
 
   <!-- Left List Panel -->
   <aside class="g list">
     <!-- You Button -->
-    <button class="me" id="meBtn" aria-expanded="false">
+    <button class="me" id="meBtn" aria-expanded="false" title="Click to change your presence & status">
       <div class="av" id="my-avatar" style="background:linear-gradient(135deg,var(--ac),#D4537E)">
         <span>SP</span>
         <span class="dot" id="meDot"></span>
@@ -219,9 +254,18 @@ p{margin:0}
       </div>
     </div>
 
+    <!-- Search input -->
+    <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--in);border:1px solid var(--line);border-radius:12px;margin:2px 0">
+      <i class="ti ti-search" style="font-size:14px;color:var(--tx2)"></i>
+      <input id="search-input" placeholder="Search devices... (Ctrl+F)" style="background:none;border:0;outline:none;font:inherit;font-size:12px;color:var(--tx);flex:1;min-width:0">
+    </div>
+
     <!-- Peer Section -->
     <div id="peer-section" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden">
-      <p class="lbl" id="nearby-label">Nearby on this Wi-Fi</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 8px 4px">
+        <p class="lbl" id="nearby-label" style="padding:0">Nearby on this Wi-Fi</p>
+        <button class="ico" id="btn-add-ip-header" title="Add peer by IP" style="padding:2px"><i class="ti ti-plus" style="font-size:15px"></i></button>
+      </div>
       <div class="list" id="peer-list" style="padding:0;flex:1;overflow-y:auto;gap:4px">
         <!-- Rendered dynamically -->
       </div>
@@ -238,56 +282,186 @@ p{margin:0}
 
   <!-- Right Chat Panel -->
   <section class="g chat">
+    <!-- Drag Drop Overlay -->
+    <div id="drag-drop-overlay" style="display:none;position:absolute;inset:0;background:var(--glass2);z-index:50;border-radius:20px;border:2px dashed var(--ac);flex-direction:column;align-items:center;justify-content:center;gap:10px;pointer-events:none">
+      <i class="ti ti-cloud-upload" style="font-size:42px;color:var(--ac)"></i>
+      <p style="font-size:16px;font-weight:600">Drop files to send</p>
+      <p style="font-size:12px;color:var(--tx2)">Sending to <span id="drag-drop-peer-name" style="font-weight:600;color:var(--ac)">device</span></p>
+    </div>
+
     <header class="hd">
       <div class="av" id="chat-av" style="background:#1D9E75">
-        <span id="chat-av-text">RS</span>
+        <span id="chat-av-text">--</span>
         <span class="dot" id="chat-dot" style="background:var(--ok)"></span>
       </div>
       <div class="grow">
         <p class="t" id="chat-peer-name" style="font-size:15px">Select a device</p>
         <p class="s" id="chat-peer-status"><span id="chat-status-label" style="color:var(--ok);font-weight:600">Available</span> · <span id="chat-status-msg">Online on LAN</span></p>
       </div>
-      <button class="ico" id="btn-attach-header" aria-label="Attach file"><i class="ti ti-paperclip" style="font-size:18px"></i></button>
+      <button class="ico" id="btn-attach-header" aria-label="Attach file" title="Attach file(s)"><i class="ti ti-paperclip" style="font-size:18px"></i></button>
     </header>
 
     <div class="msgs" id="msg-container">
       <!-- Chat bubbles and active file cards rendered dynamically -->
     </div>
 
-    <footer class="cmp">
-      <button class="ico" id="btn-attach" aria-label="Attach file"><i class="ti ti-paperclip" style="font-size:20px"></i></button>
-      <input class="f" type="text" id="compose-input" placeholder="Select a device to message...">
-      <button class="snd" id="btn-send" aria-label="Send message"><i class="ti ti-send" style="font-size:18px"></i></button>
-    </footer>
+    <!-- Typing indicator -->
+    <div id="typing-indicator" style="display:none;font-size:11.5px;color:var(--tx2);padding:2px 18px;font-style:italic">
+      <span id="typing-text">typing...</span>
+    </div>
+
+    <!-- Compose footer -->
+    <div class="cmp-wrap">
+      <!-- Quote preview -->
+      <div id="quote-preview-bar" style="display:none;align-items:center;justify-content:space-between;padding:6px 14px;background:var(--in);border-bottom:1px solid var(--line);font-size:11.5px;color:var(--tx2)">
+        <div style="display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <i class="ti ti-arrow-back-up" style="color:var(--ac);font-size:15px"></i>
+          <span>Replying to <b id="quote-preview-author">User</b>: <span id="quote-preview-text">...</span></span>
+        </div>
+        <button class="ico" id="btn-cancel-quote" style="padding:2px" title="Cancel reply"><i class="ti ti-x" style="font-size:14px"></i></button>
+      </div>
+
+      <!-- Emoji picker popover -->
+      <div id="emoji-picker" class="g" style="display:none;position:absolute;bottom:65px;right:60px;padding:8px;border-radius:14px;background:var(--glass2);border:1px solid var(--line);box-shadow:var(--shadow);grid-template-columns:repeat(7, 1fr);gap:6px;z-index:60;font-size:20px;cursor:pointer">
+        <span>😀</span><span>😂</span><span>🥰</span><span>😎</span><span>🤔</span><span>🥳</span><span>👍</span>
+        <span>🙏</span><span>🎉</span><span>🔥</span><span>💡</span><span>🚀</span><span>❤️</span><span>💯</span>
+        <span>✨</span><span>👏</span><span>🤝</span><span>⚡</span><span>💻</span><span>📁</span><span>📎</span>
+      </div>
+
+      <footer class="cmp">
+        <button class="ico" id="btn-attach" aria-label="Attach file" title="Attach file(s) (Ctrl+Shift+A)"><i class="ti ti-paperclip" style="font-size:20px"></i></button>
+        <button class="ico" id="btn-emoji" aria-label="Insert emoji" title="Insert Emoji"><i class="ti ti-mood-smile" style="font-size:20px"></i></button>
+        <input class="f" type="text" id="compose-input" placeholder="Select a device to message...">
+        <button class="snd" id="btn-send" aria-label="Send message" title="Send message"><i class="ti ti-send" style="font-size:18px"></i></button>
+      </footer>
+    </div>
   </section>
 </main>
 
-<!-- Glass Settings Modal -->
+<!-- Settings Modal (Tabbed) -->
 <div class="modal-backdrop" id="modal-settings">
   <div class="modal-box">
     <div style="display:flex;justify-content:space-between;align-items:center">
-      <span class="t" style="font-size:15px">Settings</span>
+      <span class="t" style="font-size:16px">Settings</span>
       <button class="ico" id="close-settings" aria-label="Close settings"><i class="ti ti-x" style="font-size:18px"></i></button>
     </div>
-    <div>
-      <p class="s" style="margin-bottom:6px">Device Friendly Alias</p>
-      <input class="modal-input" id="setting-alias-input" type="text" maxlength="32">
+
+    <!-- Tabs Header -->
+    <div class="nav-tabs">
+      <button class="nav-tab active" data-tab="tab-general">General</button>
+      <button class="nav-tab" data-tab="tab-files-cfg">Files</button>
+      <button class="nav-tab" data-tab="tab-network">Network</button>
+      <button class="nav-tab" data-tab="tab-about">About</button>
     </div>
-    <div>
-      <p class="s" style="margin-bottom:4px">Device ID</p>
-      <p class="s" id="setting-device-id" style="font-size:11px;word-break:break-all"></p>
+
+    <!-- Tab 1: General -->
+    <div class="tab-pane active" id="tab-general">
+      <div>
+        <p class="s" style="margin-bottom:6px">Device Friendly Alias</p>
+        <input class="modal-input" id="setting-alias-input" type="text" maxlength="32">
+      </div>
+      <div>
+        <p class="s" style="margin-bottom:4px">Device ID</p>
+        <p class="s" id="setting-device-id" style="font-size:11px;word-break:break-all"></p>
+      </div>
+      <div>
+        <p class="s" style="margin-bottom:4px">Assigned Network Port</p>
+        <p class="s" id="setting-port" style="font-size:12px"></p>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:6px">
+        <button class="btn" id="btn-save-settings">Save Alias</button>
+      </div>
     </div>
-    <div>
-      <p class="s" style="margin-bottom:4px">Network Port</p>
-      <p class="s" id="setting-port" style="font-size:12px"></p>
+
+    <!-- Tab 2: Files -->
+    <div class="tab-pane" id="tab-files-cfg">
+      <div>
+        <p class="s" style="margin-bottom:6px">Download Directory</p>
+        <div style="display:flex;gap:6px">
+          <input class="modal-input" id="setting-download-dir" type="text" readonly>
+          <button class="btn ghost" id="btn-browse-dir" style="flex:none">Browse</button>
+        </div>
+      </div>
+      <div style="margin-top:6px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="chk-auto-accept" style="cursor:pointer">
+          <span class="s" style="font-size:12px;color:var(--tx)">Auto-accept file transfers from trusted devices</span>
+        </label>
+      </div>
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px">
-      <button class="btn" id="btn-save-settings">Save</button>
+
+    <!-- Tab 3: Network Diagnostics -->
+    <div class="tab-pane" id="tab-network">
+      <div>
+        <p class="s" style="margin-bottom:4px">Local IPv4 Addresses</p>
+        <div id="diag-ips" style="padding:6px;background:var(--in);border-radius:8px;font-size:11.5px;max-height:80px;overflow-y:auto"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>
+          <p class="s" style="margin-bottom:2px">HTTPS Port</p>
+          <p id="diag-port" style="font-size:12px;font-weight:600">53317</p>
+        </div>
+        <div>
+          <p class="s" style="margin-bottom:2px">UDP Multicast (53317)</p>
+          <p id="diag-udp" style="font-size:12px;font-weight:600;color:var(--ok)">Bound</p>
+        </div>
+        <div>
+          <p class="s" style="margin-bottom:2px">Last Discovery Packet</p>
+          <p id="diag-packet" style="font-size:12px">Just now</p>
+        </div>
+        <div>
+          <p class="s" style="margin-bottom:2px">Connected Peers</p>
+          <p id="diag-peers" style="font-size:12px;font-weight:600">0 online</p>
+        </div>
+      </div>
+      <div style="margin-top:8px">
+        <button class="btn ghost" id="btn-copy-firewall" style="width:100%"><i class="ti ti-copy"></i>Copy Windows Firewall Command</button>
+      </div>
+    </div>
+
+    <!-- Tab 4: About -->
+    <div class="tab-pane" id="tab-about">
+      <div style="text-align:center;padding:12px 0">
+        <i class="ti ti-brand-telegram" style="font-size:38px;color:var(--ac)"></i>
+        <p class="t" style="font-size:16px;margin-top:6px">Xent v0.2.0</p>
+        <p class="s" style="margin-top:4px">Fast, lightweight LAN messenger and file sharing.</p>
+      </div>
+      <button class="btn ghost" id="btn-open-logs" style="width:100%"><i class="ti ti-folder"></i>Open Logs Directory</button>
     </div>
   </div>
 </div>
 
+<!-- Add by IP Modal -->
+<div class="modal-backdrop" id="modal-add-ip">
+  <div class="modal-box">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span class="t" style="font-size:15px">Connect to Device by IP</span>
+      <button class="ico" id="close-add-ip"><i class="ti ti-x" style="font-size:18px"></i></button>
+    </div>
+    <p class="s">Enter the peer's IPv4 address on your Wi-Fi/LAN (e.g. <code>192.168.1.50</code> or <code>192.168.1.50:53325</code>):</p>
+    <input class="modal-input" id="add-ip-input" placeholder="192.168.x.x[:port]">
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn ghost" id="btn-cancel-add-ip">Cancel</button>
+      <button class="btn" id="btn-submit-add-ip">Connect</button>
+    </div>
+  </div>
+</div>
+
+<!-- Image Lightbox Modal -->
+<div class="modal-backdrop" id="modal-lightbox">
+  <div style="max-width:85vw;max-height:85vh;position:relative;display:flex;align-items:center;justify-content:center">
+    <img id="lightbox-img" src="" style="max-width:100%;max-height:80vh;border-radius:14px;box-shadow:var(--shadow)">
+    <button class="ico" id="close-lightbox" style="position:absolute;top:-34px;right:-10px;color:#fff"><i class="ti ti-x" style="font-size:24px"></i></button>
+  </div>
+</div>
+
 <script>
+// Check Tauri Global Injection
+if (typeof window.__TAURI__ === 'undefined' || !window.__TAURI__.core) {
+  var bBanner = document.getElementById('backend-banner');
+  if (bBanner) bBanner.style.display = 'block';
+}
+
 // Theme Management
 var root = document.documentElement;
 var themeBtn = document.getElementById('theme');
@@ -331,7 +505,9 @@ var mySettings = {
   alias: 'You',
   status: 'available',
   status_message: '',
-  status_expires_at: null
+  status_expires_at: null,
+  download_dir: '',
+  auto_accept: false
 };
 
 var meBtn = document.getElementById('meBtn');
@@ -437,14 +613,17 @@ var peersMap = {}; // device_id -> peer
 var unreadCounts = {}; // device_id -> count
 var activePeerId = null;
 var activeTransfers = {}; // transfer_id -> info
-var chatMessagesHistory = []; // full loaded history for active thread
+var chatTimelineHistory = []; // TimelineItem list (messages + transfers)
 var chatRenderLimit = 200;
+var currentQuote = null; // { author, content }
+var lastTypingSent = 0;
 
 var peerListEl = document.getElementById('peer-list');
 var nearbyLabelEl = document.getElementById('nearby-label');
 var peerSection = document.getElementById('peer-section');
 var filesSection = document.getElementById('files-section');
 var filesHistoryList = document.getElementById('files-history-list');
+var searchInput = document.getElementById('search-input');
 
 var tabChat = document.getElementById('tab-chat');
 var tabNearby = document.getElementById('tab-nearby');
@@ -461,7 +640,16 @@ var composeInput = document.getElementById('compose-input');
 var btnSend = document.getElementById('btn-send');
 var btnAttach = document.getElementById('btn-attach');
 var btnAttachHeader = document.getElementById('btn-attach-header');
+var quotePreviewBar = document.getElementById('quote-preview-bar');
+var quotePreviewAuthor = document.getElementById('quote-preview-author');
+var quotePreviewText = document.getElementById('quote-preview-text');
+var btnCancelQuote = document.getElementById('btn-cancel-quote');
+var btnEmoji = document.getElementById('btn-emoji');
+var emojiPicker = document.getElementById('emoji-picker');
+var typingIndicator = document.getElementById('typing-indicator');
+var typingText = document.getElementById('typing-text');
 
+// Modals
 var settingsModal = document.getElementById('modal-settings');
 var btnSettings = document.getElementById('btn-settings');
 var closeSettings = document.getElementById('close-settings');
@@ -469,10 +657,39 @@ var btnSaveSettings = document.getElementById('btn-save-settings');
 var aliasInput = document.getElementById('setting-alias-input');
 var deviceIdEl = document.getElementById('setting-device-id');
 var portEl = document.getElementById('setting-port');
+var settingDownloadDir = document.getElementById('setting-download-dir');
+var btnBrowseDir = document.getElementById('btn-browse-dir');
+var chkAutoAccept = document.getElementById('chk-auto-accept');
+var diagIps = document.getElementById('diag-ips');
+var diagPort = document.getElementById('diag-port');
+var diagUdp = document.getElementById('diag-udp');
+var diagPacket = document.getElementById('diag-packet');
+var diagPeers = document.getElementById('diag-peers');
+var btnCopyFirewall = document.getElementById('btn-copy-firewall');
+var btnOpenLogs = document.getElementById('btn-open-logs');
+
+var modalAddIp = document.getElementById('modal-add-ip');
+var btnAddIpHeader = document.getElementById('btn-add-ip-header');
+var closeAddIp = document.getElementById('close-add-ip');
+var btnCancelAddIp = document.getElementById('btn-cancel-add-ip');
+var btnSubmitAddIp = document.getElementById('btn-submit-add-ip');
+var addIpInput = document.getElementById('add-ip-input');
+
+var modalLightbox = document.getElementById('modal-lightbox');
+var lightboxImg = document.getElementById('lightbox-img');
+var closeLightbox = document.getElementById('close-lightbox');
 
 function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function linkify(text) {
+  var esc = escapeHtml(text);
+  var urlRegex = /(https?:\/\/[^\s]+)/g;
+  return esc.replace(urlRegex, function(url) {
+    return '<a href="' + url + '" target="_blank" style="color:inherit;text-decoration:underline" onclick="event.stopPropagation()">' + url + '</a>';
+  });
 }
 
 function formatBytes(bytes) {
@@ -501,6 +718,38 @@ function getFileIcon(name) {
   return 'ti-file';
 }
 
+function isImageFile(name) {
+  var ext = (name || '').split('.').pop().toLowerCase();
+  return ['jpg', 'jpeg', 'png', 'gif', 'webp'].indexOf(ext) !== -1;
+}
+
+function openFile(path) {
+  if (window.__TAURI__ && window.__TAURI__.core) {
+    window.__TAURI__.core.invoke('open_file', { path: path }).catch(console.error);
+  }
+}
+
+function showInFolder(path) {
+  if (window.__TAURI__ && window.__TAURI__.core) {
+    window.__TAURI__.core.invoke('show_in_folder', { path: path }).catch(console.error);
+  }
+}
+
+// Toast
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toast';
+    t.style.cssText = 'position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:var(--glass2);border:1px solid var(--line);color:var(--tx);padding:9px 16px;border-radius:12px;font-size:12.5px;z-index:9999;opacity:0;transition:opacity .15s;pointer-events:none;box-shadow:var(--shadow)';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.opacity = '1';
+  clearTimeout(t._h);
+  t._h = setTimeout(function() { t.style.opacity = '0'; }, 2800);
+}
+
 // Rail Navigation handling
 function setRailTab(activeTab) {
   [tabChat, tabNearby, tabFiles].forEach(function(b){ if (b) b.classList.remove('on'); });
@@ -523,12 +772,30 @@ if (tabFiles) tabFiles.addEventListener('click', function(){ setRailTab(tabFiles
 // Peer List Rendering
 function renderPeerList() {
   var peerList = Object.values(peersMap);
+  var q = (searchInput && searchInput.value || '').toLowerCase().trim();
+  if (q) {
+    peerList = peerList.filter(function(p){
+      return (p.alias || '').toLowerCase().indexOf(q) !== -1 || (p.status_message || '').toLowerCase().indexOf(q) !== -1;
+    });
+  }
+
   if (nearbyLabelEl) {
-    nearbyLabelEl.textContent = 'Nearby, ' + peerList.length + ' online';
+    nearbyLabelEl.textContent = 'Nearby, ' + Object.keys(peersMap).length + ' online';
   }
 
   if (peerList.length === 0) {
-    peerListEl.innerHTML = '<div style="padding:16px 8px;text-align:center;color:var(--tx2);font-size:12px">Scanning for devices on LAN...</div>';
+    peerListEl.innerHTML = '<div style="padding:14px 10px;text-align:center;background:var(--in);border-radius:14px;border:1px dashed var(--line);margin-top:6px;display:flex;flex-direction:column;gap:8px">' +
+      '<i class="ti ti-radar-2" style="font-size:26px;color:var(--tx2);opacity:0.7;margin:0 auto"></i>' +
+      '<p style="font-size:12px;font-weight:600">No devices found</p>' +
+      '<p style="font-size:11px;color:var(--tx2);line-height:1.4">Ensure devices are on the same Wi-Fi, Windows network is Private, and Xent is allowed in Firewall.</p>' +
+      '<button class="btn ghost" id="btn-add-ip-empty" style="padding:6px 12px;font-size:11.5px;display:flex;align-items:center;justify-content:center;gap:6px"><i class="ti ti-plus"></i>Add Device by IP</button>' +
+    '</div>';
+
+    var bEmpty = document.getElementById('btn-add-ip-empty');
+    if (bEmpty) {
+      bEmpty.addEventListener('click', function(){ modalAddIp.classList.add('show'); });
+    }
+
     if (!activePeerId) {
       if (chatPeerNameEl) chatPeerNameEl.textContent = 'Select a device';
       if (chatStatusLabel) chatStatusLabel.textContent = 'Waiting for devices';
@@ -577,6 +844,10 @@ function renderPeerList() {
   });
 }
 
+if (searchInput) {
+  searchInput.addEventListener('input', renderPeerList);
+}
+
 function selectPeer(peerId) {
   activePeerId = peerId;
   var peer = peersMap[peerId];
@@ -606,26 +877,108 @@ function selectPeer(peerId) {
 
   if (window.__TAURI__ && window.__TAURI__.core) {
     window.__TAURI__.core.invoke('mark_thread_read', { peerId: peerId }).catch(console.error);
-    loadChatHistory(peerId);
+    loadChatTimeline(peerId);
   }
 }
 
-// Chat rendering & Cap to 200
+// Chat rendering & Timeline
 function renderMessage(msg) {
-  var div = document.createElement('div');
-  if (msg.is_incoming) {
-    div.className = 'bin';
-    div.innerHTML = '<p class="who">' + escapeHtml(msg.sender_name) + '</p>' +
-      '<div class="b">' + escapeHtml(msg.content) + '</div>';
-  } else {
-    div.className = 'bout';
-    div.id = 'msg-' + msg.id;
-    var myName = mySettings ? mySettings.alias : 'You';
-    div.innerHTML = '<p class="who">You (' + escapeHtml(myName) + ')</p>' +
-      '<div class="b">' + escapeHtml(msg.content) + '</div>' +
-      '<p class="s" style="margin-top:3px">' + escapeHtml(msg.status) + '</p>';
+  var wrap = document.createElement('div');
+  wrap.className = 'msg-wrap ' + (msg.is_incoming ? 'bin' : 'bout');
+  wrap.id = 'msg-' + msg.id;
+
+  var whoName = msg.is_incoming ? escapeHtml(msg.sender_name) : 'You (' + escapeHtml(mySettings.alias) + ')';
+  var quoteHtml = msg.quote ? '<div class="quote-banner">' + escapeHtml(msg.quote) + '</div>' : '';
+  var editedHtml = msg.is_edited ? ' <span style="font-size:10.5px;opacity:0.8">(edited)</span>' : '';
+  var statusLine = !msg.is_incoming ? '<p class="s" style="margin-top:3px">' + escapeHtml(msg.status) + '</p>' : '';
+
+  // Reactions
+  var reactHtml = '';
+  if (msg.reactions) {
+    try {
+      var rMap = JSON.parse(msg.reactions);
+      var pills = '';
+      for (var em in rMap) {
+        pills += '<span class="react-pill" data-msg="' + msg.id + '" data-emoji="' + em + '">' + em + ' ' + rMap[em].length + '</span>';
+      }
+      if (pills) reactHtml = '<div class="react-bar">' + pills + '</div>';
+    } catch(e) {}
   }
-  return div;
+
+  // Hover Actions
+  var acts = '<div class="bubble-acts">' +
+    '<button class="ico" title="Reply" onclick="setQuote(\'' + escapeHtml(msg.sender_name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(msg.content).replace(/'/g, "\\'") + '\')"><i class="ti ti-arrow-back-up" style="font-size:13px"></i></button>' +
+    '<button class="ico" title="React 👍" onclick="sendReaction(\'' + msg.id + '\', \'👍\')">👍</button>' +
+    '<button class="ico" title="React ❤️" onclick="sendReaction(\'' + msg.id + '\', \'❤️\')">❤️</button>';
+
+  if (!msg.is_incoming) {
+    acts += '<button class="ico" title="Edit" onclick="editMessagePrompt(\'' + msg.id + '\', \'' + escapeHtml(msg.content).replace(/'/g, "\\'") + '\')"><i class="ti ti-pencil" style="font-size:13px"></i></button>' +
+      '<button class="ico" title="Delete" onclick="deleteMessageAction(\'' + msg.id + '\')"><i class="ti ti-trash" style="font-size:13px"></i></button>';
+  }
+  acts += '</div>';
+
+  wrap.innerHTML = '<p class="who">' + whoName + '</p>' +
+    '<div class="b">' + quoteHtml + linkify(msg.content) + editedHtml + '</div>' +
+    statusLine + reactHtml + acts;
+
+  return wrap;
+}
+
+function setQuote(author, content) {
+  currentQuote = { author: author, content: content };
+  if (quotePreviewBar && quotePreviewAuthor && quotePreviewText) {
+    quotePreviewAuthor.textContent = author;
+    quotePreviewText.textContent = content;
+    quotePreviewBar.style.display = 'flex';
+  }
+  if (composeInput) composeInput.focus();
+}
+
+if (btnCancelQuote) {
+  btnCancelQuote.addEventListener('click', function() {
+    currentQuote = null;
+    quotePreviewBar.style.display = 'none';
+  });
+}
+
+function sendReaction(messageId, emoji) {
+  if (window.__TAURI__ && window.__TAURI__.core && activePeerId) {
+    window.__TAURI__.core.invoke('react_chat_message', {
+      messageId: messageId,
+      peerId: activePeerId,
+      emoji: emoji
+    }).then(function(){
+      loadChatTimeline(activePeerId);
+    }).catch(console.error);
+  }
+}
+
+function editMessagePrompt(messageId, currentText) {
+  var newText = prompt('Edit your message:', currentText);
+  if (newText && newText.trim() && newText.trim() !== currentText) {
+    if (window.__TAURI__ && window.__TAURI__.core && activePeerId) {
+      window.__TAURI__.core.invoke('edit_chat_message', {
+        messageId: messageId,
+        peerId: activePeerId,
+        newContent: newText.trim()
+      }).then(function(){
+        loadChatTimeline(activePeerId);
+      }).catch(console.error);
+    }
+  }
+}
+
+function deleteMessageAction(messageId) {
+  if (confirm('Delete this message for everyone?')) {
+    if (window.__TAURI__ && window.__TAURI__.core && activePeerId) {
+      window.__TAURI__.core.invoke('delete_chat_message', {
+        messageId: messageId,
+        peerId: activePeerId
+      }).then(function(){
+        loadChatTimeline(activePeerId);
+      }).catch(console.error);
+    }
+  }
 }
 
 function renderFileCard(t) {
@@ -672,6 +1025,12 @@ function renderFileCard(t) {
     statusText = pct + '%' + timeTxt;
   } else if (t.status === 'Completed') {
     statusText = '100% · Completed';
+    if (t.file_path) {
+      actsHtml = '<div class="acts">' +
+        '<button class="btn ghost" onclick="openFile(\'' + escapeHtml(t.file_path).replace(/\\/g, '\\\\') + '\')"><i class="ti ti-folder-open"></i>Open</button>' +
+        '<button class="btn ghost" onclick="showInFolder(\'' + escapeHtml(t.file_path).replace(/\\/g, '\\\\') + '\')"><i class="ti ti-folder"></i>Folder</button>' +
+      '</div>';
+    }
   } else if (t.status === 'Cancelled') {
     statusText = 'Transfer cancelled';
   } else if (typeof t.status === 'object' && t.status.Failed) {
@@ -728,18 +1087,18 @@ function renderFileCard(t) {
 
 function renderChatThread() {
   msgContainerEl.innerHTML = '';
-  if (chatMessagesHistory.length === 0) {
+  if (chatTimelineHistory.length === 0) {
     var peer = peersMap[activePeerId];
     var name = peer ? peer.alias : 'peer';
     msgContainerEl.innerHTML = '<div style="margin:auto;text-align:center;color:var(--tx2);font-size:13px"><p>No messages yet with ' + escapeHtml(name) + '</p><p class="s" style="margin-top:4px">Send a message or file to connect</p></div>';
     return;
   }
 
-  var showLoadEarlier = chatMessagesHistory.length > chatRenderLimit;
+  var showLoadEarlier = chatTimelineHistory.length > chatRenderLimit;
   if (showLoadEarlier) {
     var btnEarlier = document.createElement('button');
     btnEarlier.className = 'load-more-btn';
-    btnEarlier.textContent = 'Load earlier messages (' + (chatMessagesHistory.length - chatRenderLimit) + ')';
+    btnEarlier.textContent = 'Load earlier messages (' + (chatTimelineHistory.length - chatRenderLimit) + ')';
     btnEarlier.addEventListener('click', function() {
       chatRenderLimit += 200;
       renderChatThread();
@@ -747,10 +1106,39 @@ function renderChatThread() {
     msgContainerEl.appendChild(btnEarlier);
   }
 
-  var sliceStart = Math.max(0, chatMessagesHistory.length - chatRenderLimit);
-  var visibleMsgs = chatMessagesHistory.slice(sliceStart);
-  visibleMsgs.forEach(function(m) {
-    msgContainerEl.appendChild(renderMessage(m));
+  var sliceStart = Math.max(0, chatTimelineHistory.length - chatRenderLimit);
+  var visibleItems = chatTimelineHistory.slice(sliceStart);
+  var lastDateStr = '';
+
+  visibleItems.forEach(function(item) {
+    var itemTime = item.kind === 'message' ? item.created_at : item.created_at;
+    var dStr = new Date(itemTime).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+    if (dStr !== lastDateStr) {
+      lastDateStr = dStr;
+      var sep = document.createElement('div');
+      sep.className = 'date-sep';
+      sep.textContent = dStr;
+      msgContainerEl.appendChild(sep);
+    }
+
+    if (item.kind === 'message') {
+      msgContainerEl.appendChild(renderMessage(item));
+    } else if (item.kind === 'transfer') {
+      var mockTransfer = {
+        transfer_id: item.id,
+        peer_id: item.peer_id,
+        sender_name: item.sender_name,
+        receiver_name: item.receiver_name,
+        file_name: item.file_name,
+        file_size: item.file_size,
+        transferred_bytes: item.file_size,
+        speed_mbps: 0,
+        status: item.status === 'completed' ? 'Completed' : (item.status === 'declined' ? 'Declined' : 'Cancelled'),
+        is_incoming: item.receiver_name === mySettings.alias,
+        file_path: item.local_path
+      };
+      renderFileCard(mockTransfer);
+    }
   });
 
   Object.values(activeTransfers).forEach(function(t) {
@@ -762,11 +1150,11 @@ function renderChatThread() {
   msgContainerEl.scrollTop = msgContainerEl.scrollHeight;
 }
 
-function loadChatHistory(peerId) {
+function loadChatTimeline(peerId) {
   if (!window.__TAURI__ || !window.__TAURI__.core) return;
   chatRenderLimit = 200;
-  window.__TAURI__.core.invoke('get_chat_history', { peerId: peerId }).then(function(msgs) {
-    chatMessagesHistory = msgs || [];
+  window.__TAURI__.core.invoke('get_chat_timeline', { peerId: peerId, limit: 200 }).then(function(items) {
+    chatTimelineHistory = items || [];
     renderChatThread();
   }).catch(console.error);
 }
@@ -775,24 +1163,19 @@ function sendMessage() {
   var text = (composeInput.value || '').trim();
   if (!text || !activePeerId) return;
 
+  var quoteToSend = currentQuote ? (currentQuote.author + ': ' + currentQuote.content) : null;
   composeInput.value = '';
+  currentQuote = null;
+  if (quotePreviewBar) quotePreviewBar.style.display = 'none';
 
   if (window.__TAURI__ && window.__TAURI__.core) {
     window.__TAURI__.core.invoke('send_chat_message', {
       peerId: activePeerId,
-      content: text
+      content: text,
+      quote: quoteToSend
     }).then(function(sentMsg) {
-      var found = false;
-      for (var i = 0; i < chatMessagesHistory.length; i++) {
-        if (chatMessagesHistory[i].id === sentMsg.id) {
-          chatMessagesHistory[i] = sentMsg;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        chatMessagesHistory.push(sentMsg);
-      }
+      sentMsg.kind = 'message';
+      chatTimelineHistory.push(sentMsg);
       renderChatThread();
     }).catch(function(err) {
       console.error('Send error:', err);
@@ -807,15 +1190,38 @@ if (composeInput) {
       sendMessage();
     }
   });
+
+  composeInput.addEventListener('input', function() {
+    var now = Date.now();
+    if (now - lastTypingSent > 2000 && activePeerId) {
+      lastTypingSent = now;
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('send_typing_indicator', { peerId: activePeerId }).catch(function(){});
+      }
+    }
+  });
 }
 if (btnSend) btnSend.addEventListener('click', sendMessage);
 
-// File Attachment handling
+// File Attachment handling (Multiple files + auto-select single peer)
 function triggerFilePicker() {
-  if (!activePeerId) return;
-  if (window.__TAURI__ && window.__TAURI__.core) {
-    window.__TAURI__.core.invoke('pick_file_to_send').then(function(path) {
-      if (path) {
+  if (!window.__TAURI__ || !window.__TAURI__.core) { showToast('Backend not connected'); return; }
+  var peerKeys = Object.keys(peersMap);
+  if (!activePeerId) {
+    if (peerKeys.length === 1) {
+      selectPeer(peerKeys[0]);
+    } else if (peerKeys.length === 0) {
+      showToast('No devices nearby. Use "Add by IP" or connect to Wi-Fi');
+      return;
+    } else {
+      showToast('Select a device first, then attach a file');
+      return;
+    }
+  }
+
+  window.__TAURI__.core.invoke('pick_files_to_send').then(function(paths) {
+    if (paths && paths.length > 0) {
+      paths.forEach(function(path) {
         window.__TAURI__.core.invoke('send_file_request', {
           peerId: activePeerId,
           filePath: path
@@ -823,13 +1229,111 @@ function triggerFilePicker() {
           activeTransfers[info.transfer_id] = info;
           renderFileCard(info);
         }).catch(console.error);
-      }
-    }).catch(console.error);
-  }
+      });
+    }
+  }).catch(console.error);
 }
 
 if (btnAttach) btnAttach.addEventListener('click', triggerFilePicker);
 if (btnAttachHeader) btnAttachHeader.addEventListener('click', triggerFilePicker);
+
+// Drag & Drop
+var chatPanel = document.querySelector('.chat');
+var dropOverlay = document.getElementById('drag-drop-overlay');
+var dropPeerName = document.getElementById('drag-drop-peer-name');
+
+if (chatPanel) {
+  ['dragenter', 'dragover'].forEach(function(evt) {
+    chatPanel.addEventListener(evt, function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (activePeerId && peersMap[activePeerId]) {
+        dropPeerName.textContent = peersMap[activePeerId].alias;
+        dropOverlay.style.display = 'flex';
+      }
+    });
+  });
+
+  ['dragleave', 'drop'].forEach(function(evt) {
+    chatPanel.addEventListener(evt, function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      dropOverlay.style.display = 'none';
+    });
+  });
+}
+
+if (window.__TAURI__ && window.__TAURI__.event) {
+  window.__TAURI__.event.listen('tauri://drag-drop', function(event) {
+    var paths = event.payload && event.payload.paths ? event.payload.paths : [];
+    if (paths && paths.length > 0 && activePeerId) {
+      paths.forEach(function(p) {
+        window.__TAURI__.core.invoke('send_file_request', {
+          peerId: activePeerId,
+          filePath: p
+        }).then(function(info) {
+          activeTransfers[info.transfer_id] = info;
+          renderFileCard(info);
+        }).catch(console.error);
+      });
+    }
+  });
+}
+
+// Clipboard Image Paste
+window.addEventListener('paste', function(e) {
+  if (!activePeerId) return;
+  var items = (e.clipboardData || e.originalEvent.clipboardData).items;
+  for (var index in items) {
+    var item = items[index];
+    if (item.kind === 'file' && item.type.indexOf('image/') !== -1) {
+      var blob = item.getAsFile();
+      var reader = new FileReader();
+      reader.onload = function(evt) {
+        var arrayBuffer = evt.target.result;
+        var bytes = Array.from(new Uint8Array(arrayBuffer));
+        var ext = item.type.split('/')[1] || 'png';
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('save_clipboard_image', { bytes: bytes, ext: ext }).then(function(path) {
+            window.__TAURI__.core.invoke('send_file_request', {
+              peerId: activePeerId,
+              filePath: path
+            }).then(function(info) {
+              activeTransfers[info.transfer_id] = info;
+              renderFileCard(info);
+            }).catch(console.error);
+          }).catch(console.error);
+        }
+      };
+      reader.readAsArrayBuffer(blob);
+      break;
+    }
+  }
+});
+
+// Emoji Picker
+if (btnEmoji && emojiPicker) {
+  btnEmoji.addEventListener('click', function(e) {
+    e.stopPropagation();
+    emojiPicker.style.display = emojiPicker.style.display === 'grid' ? 'none' : 'grid';
+  });
+
+  emojiPicker.querySelectorAll('span').forEach(function(sp) {
+    sp.addEventListener('click', function() {
+      if (composeInput) {
+        composeInput.value += this.textContent;
+        composeInput.focus();
+      }
+      emojiPicker.style.display = 'none';
+    });
+  });
+
+  document.addEventListener('click', function(e) {
+    if (!emojiPicker.contains(e.target) && !btnEmoji.contains(e.target)) {
+      emojiPicker.style.display = 'none';
+    }
+  });
+}
 
 // Transfer History (Files Tab)
 function loadTransferHistory() {
@@ -857,13 +1361,50 @@ function loadTransferHistory() {
   }).catch(console.error);
 }
 
-// Settings Modal
+// Settings Modal Tabs
+document.querySelectorAll('.nav-tab').forEach(function(tab) {
+  tab.addEventListener('click', function() {
+    document.querySelectorAll('.nav-tab').forEach(function(t){ t.classList.remove('active'); });
+    document.querySelectorAll('.tab-pane').forEach(function(p){ p.classList.remove('active'); });
+    tab.classList.add('active');
+    var target = document.getElementById(tab.dataset.tab);
+    if (target) target.classList.add('active');
+
+    if (tab.dataset.tab === 'tab-network') {
+      loadNetworkDiagnostics();
+    }
+  });
+});
+
+function loadNetworkDiagnostics() {
+  if (!window.__TAURI__ || !window.__TAURI__.core) return;
+  window.__TAURI__.core.invoke('get_network_diagnostics').then(function(diag) {
+    if (diagIps) diagIps.innerHTML = diag.local_addrs.map(function(a){ return '<div>' + escapeHtml(a) + '</div>'; }).join('');
+    if (diagPort) diagPort.textContent = String(diag.https_port);
+    if (diagUdp) {
+      diagUdp.textContent = diag.udp_listener_bound ? 'Bound' : 'Not bound';
+      diagUdp.style.color = diag.udp_listener_bound ? 'var(--ok)' : 'var(--busy)';
+    }
+    if (diagPacket) diagPacket.textContent = diag.last_packet_time ? (new Date(diag.last_packet_time * 1000).toLocaleTimeString()) : 'None yet';
+    if (diagPeers) diagPeers.textContent = diag.peer_count + ' online';
+    if (btnCopyFirewall) {
+      btnCopyFirewall.onclick = function() {
+        navigator.clipboard.writeText(diag.firewall_command).then(function(){
+          showToast('Firewall command copied to clipboard');
+        });
+      };
+    }
+  }).catch(console.error);
+}
+
 if (btnSettings) {
   btnSettings.addEventListener('click', function() {
     if (mySettings) {
       if (aliasInput) aliasInput.value = mySettings.alias || '';
       if (deviceIdEl) deviceIdEl.textContent = mySettings.device_id || '';
       if (portEl) portEl.textContent = mySettings.port ? String(mySettings.port) : '53317';
+      if (settingDownloadDir) settingDownloadDir.value = mySettings.download_dir || '';
+      if (chkAutoAccept) chkAutoAccept.checked = !!mySettings.auto_accept;
     }
     settingsModal.classList.add('show');
   });
@@ -885,6 +1426,85 @@ if (btnSaveSettings) {
     }
   });
 }
+if (btnBrowseDir) {
+  btnBrowseDir.addEventListener('click', function() {
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('pick_download_dir').then(function(dir) {
+        if (dir) {
+          settingDownloadDir.value = dir;
+          mySettings.download_dir = dir;
+        }
+      }).catch(console.error);
+    }
+  });
+}
+if (chkAutoAccept) {
+  chkAutoAccept.addEventListener('change', function() {
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('set_auto_accept', { enabled: chkAutoAccept.checked }).then(function(s) {
+        mySettings = s;
+      }).catch(console.error);
+    }
+  });
+}
+if (btnOpenLogs) {
+  btnOpenLogs.addEventListener('click', function() {
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('open_log_folder').catch(console.error);
+    }
+  });
+}
+
+// Add by IP Modal
+if (btnAddIpHeader) {
+  btnAddIpHeader.addEventListener('click', function() {
+    modalAddIp.classList.add('show');
+    if (addIpInput) { addIpInput.value = ''; addIpInput.focus(); }
+  });
+}
+if (closeAddIp) closeAddIp.addEventListener('click', function(){ modalAddIp.classList.remove('show'); });
+if (btnCancelAddIp) btnCancelAddIp.addEventListener('click', function(){ modalAddIp.classList.remove('show'); });
+if (btnSubmitAddIp) {
+  btnSubmitAddIp.addEventListener('click', function() {
+    var target = (addIpInput.value || '').trim();
+    if (!target) return;
+    btnSubmitAddIp.textContent = 'Connecting...';
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('add_peer_by_ip', { target: target }).then(function(peer) {
+        modalAddIp.classList.remove('show');
+        btnSubmitAddIp.textContent = 'Connect';
+        showToast('Connected to ' + peer.alias);
+        selectPeer(peer.device_id);
+      }).catch(function(err) {
+        btnSubmitAddIp.textContent = 'Connect';
+        alert(err);
+      });
+    }
+  });
+}
+
+// Lightbox
+if (closeLightbox) {
+  closeLightbox.addEventListener('click', function() {
+    modalLightbox.classList.remove('show');
+  });
+}
+
+// Keyboard shortcuts (Esc, Ctrl+F, Ctrl+Shift+A)
+window.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    [settingsModal, modalAddIp, modalLightbox].forEach(function(m){ m.classList.remove('show'); });
+    if (menu) menu.classList.remove('open');
+    if (emojiPicker) emojiPicker.style.display = 'none';
+    if (quotePreviewBar) { currentQuote = null; quotePreviewBar.style.display = 'none'; }
+  } else if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    if (searchInput) searchInput.focus();
+  } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
+    e.preventDefault();
+    triggerFilePicker();
+  }
+});
 
 // Initialization and Event Subscriptions
 if (window.__TAURI__ && window.__TAURI__.core) {
@@ -945,21 +1565,23 @@ if (window.__TAURI__ && window.__TAURI__.core) {
       if (!msg) return;
 
       if (msg.thread_peer_id === activePeerId) {
-        chatMessagesHistory.push(msg);
+        msg.kind = 'message';
+        chatTimelineHistory.push(msg);
         renderChatThread();
         window.__TAURI__.core.invoke('mark_thread_read', { peerId: activePeerId }).catch(console.error);
       } else {
         unreadCounts[msg.thread_peer_id] = (unreadCounts[msg.thread_peer_id] || 0) + 1;
         renderPeerList();
+        showToast('New message from ' + msg.sender_name);
       }
     });
 
     window.__TAURI__.event.listen('message_status_updated', function(event) {
       var msg = event.payload;
       if (!msg) return;
-      for (var i = 0; i < chatMessagesHistory.length; i++) {
-        if (chatMessagesHistory[i].id === msg.id) {
-          chatMessagesHistory[i] = msg;
+      for (var i = 0; i < chatTimelineHistory.length; i++) {
+        if (chatTimelineHistory[i].id === msg.id) {
+          chatTimelineHistory[i].status = msg.status;
           break;
         }
       }
@@ -968,6 +1590,67 @@ if (window.__TAURI__ && window.__TAURI__.core) {
         var statusEl = el.querySelector('.s');
         if (statusEl) statusEl.textContent = msg.status;
       }
+    });
+
+    window.__TAURI__.event.listen('peer_typing', function(event) {
+      var p = event.payload;
+      if (!p || !typingIndicator || !typingText) return;
+      if (p.sender_id === activePeerId) {
+        typingText.textContent = p.sender_name + ' is typing...';
+        typingIndicator.style.display = 'block';
+        clearTimeout(typingIndicator._h);
+        typingIndicator._h = setTimeout(function(){
+          typingIndicator.style.display = 'none';
+        }, 3000);
+      }
+    });
+
+    window.__TAURI__.event.listen('thread_marked_read', function(event) {
+      var peerId = event.payload;
+      if (peerId === activePeerId) {
+        chatTimelineHistory.forEach(function(m){
+          if (!m.is_incoming) m.status = 'Read';
+        });
+        renderChatThread();
+      }
+    });
+
+    window.__TAURI__.event.listen('message_edited', function(event) {
+      var data = event.payload;
+      if (!data) return;
+      for (var i = 0; i < chatTimelineHistory.length; i++) {
+        if (chatTimelineHistory[i].id === data.message_id) {
+          chatTimelineHistory[i].content = data.new_content;
+          chatTimelineHistory[i].is_edited = true;
+          break;
+        }
+      }
+      renderChatThread();
+    });
+
+    window.__TAURI__.event.listen('message_deleted', function(event) {
+      var data = event.payload;
+      if (!data) return;
+      for (var i = 0; i < chatTimelineHistory.length; i++) {
+        if (chatTimelineHistory[i].id === data.message_id) {
+          chatTimelineHistory[i].content = 'This message was deleted';
+          chatTimelineHistory[i].is_deleted = true;
+          break;
+        }
+      }
+      renderChatThread();
+    });
+
+    window.__TAURI__.event.listen('message_reaction_updated', function(event) {
+      var data = event.payload;
+      if (!data) return;
+      for (var i = 0; i < chatTimelineHistory.length; i++) {
+        if (chatTimelineHistory[i].id === data.message_id) {
+          chatTimelineHistory[i].reactions = data.reactions;
+          break;
+        }
+      }
+      renderChatThread();
     });
 
     window.__TAURI__.event.listen('file_transfer_progress', function(event) {

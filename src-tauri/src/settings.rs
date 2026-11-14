@@ -36,6 +36,12 @@ pub struct AppSettings {
     pub status_message: String,
     #[serde(default)]
     pub status_expires_at: Option<u64>,
+    #[serde(default)]
+    pub manual_peers: Vec<String>,
+    #[serde(default)]
+    pub auto_accept: bool,
+    #[serde(default)]
+    pub trusted_devices: Vec<String>,
 }
 
 pub struct SettingsState {
@@ -109,7 +115,59 @@ impl SettingsState {
             status: "available".to_string(),
             status_message: "".to_string(),
             status_expires_at: None,
+            manual_peers: Vec::new(),
+            auto_accept: false,
+            trusted_devices: Vec::new(),
         }
+    }
+
+    pub fn add_manual_peer(&self, peer_addr: String) -> Result<AppSettings, String> {
+        let trimmed = peer_addr.trim().to_string();
+        if trimmed.is_empty() {
+            return Err("Peer address cannot be empty".to_string());
+        }
+        let mut lock = self.settings.lock().unwrap();
+        if !lock.manual_peers.contains(&trimmed) {
+            lock.manual_peers.push(trimmed);
+            Self::save_to_disk(&self.config_path, &lock)?;
+        }
+        Ok(lock.clone())
+    }
+
+    pub fn remove_manual_peer(&self, peer_addr: String) -> Result<AppSettings, String> {
+        let mut lock = self.settings.lock().unwrap();
+        lock.manual_peers.retain(|p| p != &peer_addr);
+        Self::save_to_disk(&self.config_path, &lock)?;
+        Ok(lock.clone())
+    }
+
+    pub fn update_download_dir(&self, new_dir: String) -> Result<AppSettings, String> {
+        let trimmed = new_dir.trim().to_string();
+        if trimmed.is_empty() {
+            return Err("Download directory cannot be empty".to_string());
+        }
+        let mut lock = self.settings.lock().unwrap();
+        lock.download_dir = trimmed;
+        Self::save_to_disk(&self.config_path, &lock)?;
+        Ok(lock.clone())
+    }
+
+    pub fn set_auto_accept(&self, enabled: bool) -> Result<AppSettings, String> {
+        let mut lock = self.settings.lock().unwrap();
+        lock.auto_accept = enabled;
+        Self::save_to_disk(&self.config_path, &lock)?;
+        Ok(lock.clone())
+    }
+
+    pub fn toggle_trusted_device(&self, device_id: String) -> Result<AppSettings, String> {
+        let mut lock = self.settings.lock().unwrap();
+        if lock.trusted_devices.contains(&device_id) {
+            lock.trusted_devices.retain(|id| id != &device_id);
+        } else {
+            lock.trusted_devices.push(device_id);
+        }
+        Self::save_to_disk(&self.config_path, &lock)?;
+        Ok(lock.clone())
     }
 
     pub fn set_presence(
@@ -154,5 +212,32 @@ impl SettingsState {
         *lock = new_settings;
         Self::save_to_disk(&self.config_path, &lock)?;
         Ok(lock.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_legacy_settings_deserialization() {
+        let legacy_json = r#"{
+            "device_id": "device-12345",
+            "alias": "Swift Falcon",
+            "device_type": "desktop",
+            "port": 53317,
+            "download_dir": "C:/Downloads",
+            "theme": "system",
+            "instance_id": "default"
+        }"#;
+
+        let settings: AppSettings = serde_json::from_str(legacy_json).expect("Should deserialize legacy settings");
+        assert_eq!(settings.device_id, "device-12345");
+        assert_eq!(settings.alias, "Swift Falcon");
+        assert_eq!(settings.status, "available");
+        assert_eq!(settings.status_message, "");
+        assert_eq!(settings.manual_peers.len(), 0);
+        assert!(!settings.auto_accept);
+        assert_eq!(settings.trusted_devices.len(), 0);
     }
 }

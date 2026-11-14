@@ -45,6 +45,37 @@ pub struct SendMessagePayload {
     pub receiver_name: String,
     pub content: String,
     pub created_at: i64,
+    #[serde(default)]
+    pub quote: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypingPayload {
+    pub sender_id: String,
+    pub sender_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadPayload {
+    pub peer_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditPayload {
+    pub message_id: String,
+    pub new_content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletePayload {
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReactionPayload {
+    pub message_id: String,
+    pub user_name: String,
+    pub emoji: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +126,11 @@ pub async fn start_server(
         .route("/api/files/response", post(file_response_handler))
         .route("/api/files/chunk/:transfer_id", post(file_chunk_handler))
         .route("/api/files/cancel/:transfer_id", post(file_cancel_handler))
+        .route("/api/message/typing", post(typing_handler))
+        .route("/api/message/read", post(read_handler))
+        .route("/api/message/edit", post(edit_handler))
+        .route("/api/message/delete", post(delete_handler))
+        .route("/api/message/reaction", post(reaction_handler))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -181,6 +217,10 @@ async fn message_handler(
         created_at: payload.created_at,
         is_incoming: true,
         is_read: false,
+        quote: payload.quote.clone(),
+        is_edited: false,
+        is_deleted: false,
+        reactions: None,
     };
 
     if let Err(e) = state.db.save_message(&chat_msg) {
@@ -197,6 +237,69 @@ async fn message_handler(
         status: "delivered".to_string(),
         timestamp: now,
     })
+}
+
+async fn typing_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(payload): Json<TypingPayload>,
+) -> Json<serde_json::Value> {
+    if let Some(ref handle) = state.app_handle {
+        let _ = handle.emit("peer_typing", &payload);
+    }
+    Json(serde_json::json!({ "success": true }))
+}
+
+async fn read_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(payload): Json<ReadPayload>,
+) -> Json<serde_json::Value> {
+    let _ = state.db.mark_as_read(&payload.peer_id);
+    if let Some(ref handle) = state.app_handle {
+        let _ = handle.emit("thread_marked_read", &payload.peer_id);
+    }
+    Json(serde_json::json!({ "success": true }))
+}
+
+async fn edit_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(payload): Json<EditPayload>,
+) -> Json<serde_json::Value> {
+    let _ = state.db.edit_message(&payload.message_id, &payload.new_content);
+    if let Some(ref handle) = state.app_handle {
+        let _ = handle.emit("message_edited", serde_json::json!({
+            "message_id": payload.message_id,
+            "new_content": payload.new_content
+        }));
+    }
+    Json(serde_json::json!({ "success": true }))
+}
+
+async fn delete_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(payload): Json<DeletePayload>,
+) -> Json<serde_json::Value> {
+    let _ = state.db.delete_message(&payload.message_id);
+    if let Some(ref handle) = state.app_handle {
+        let _ = handle.emit("message_deleted", serde_json::json!({
+            "message_id": payload.message_id
+        }));
+    }
+    Json(serde_json::json!({ "success": true }))
+}
+
+async fn reaction_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(payload): Json<ReactionPayload>,
+) -> Json<serde_json::Value> {
+    let res = state.db.add_reaction(&payload.message_id, &payload.user_name, &payload.emoji);
+    let reactions_json = res.unwrap_or_default();
+    if let Some(ref handle) = state.app_handle {
+        let _ = handle.emit("message_reaction_updated", serde_json::json!({
+            "message_id": payload.message_id,
+            "reactions": reactions_json
+        }));
+    }
+    Json(serde_json::json!({ "success": true }))
 }
 
 async fn file_request_handler(

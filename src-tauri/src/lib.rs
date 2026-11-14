@@ -94,6 +94,61 @@ async fn set_presence(
 }
 
 #[tauri::command]
+fn get_network_diagnostics(
+    discovery_mgr: State<'_, Arc<DiscoveryManager>>,
+) -> discovery::NetworkDiagnostics {
+    discovery_mgr.get_network_diagnostics()
+}
+
+#[tauri::command]
+async fn add_peer_by_ip(
+    discovery_mgr: State<'_, Arc<DiscoveryManager>>,
+    target: String,
+) -> Result<Peer, String> {
+    discovery_mgr.add_peer_by_ip(target).await
+}
+
+#[tauri::command]
+fn update_download_dir(
+    settings_state: State<'_, Arc<SettingsState>>,
+    download_dir: String,
+) -> Result<AppSettings, String> {
+    settings_state.update_download_dir(download_dir)
+}
+
+#[tauri::command]
+fn set_auto_accept(
+    settings_state: State<'_, Arc<SettingsState>>,
+    enabled: bool,
+) -> Result<AppSettings, String> {
+    settings_state.set_auto_accept(enabled)
+}
+
+#[tauri::command]
+fn toggle_trusted_device(
+    settings_state: State<'_, Arc<SettingsState>>,
+    device_id: String,
+) -> Result<AppSettings, String> {
+    settings_state.toggle_trusted_device(device_id)
+}
+
+#[tauri::command]
+fn open_log_folder() -> Result<(), String> {
+    let dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("Xent");
+    let _ = std::fs::create_dir_all(&dir);
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn update_settings(
     state: State<'_, Arc<SettingsState>>,
     settings: AppSettings,
@@ -251,11 +306,27 @@ pub fn run() {
             update_alias,
             update_settings,
             set_presence,
+            get_network_diagnostics,
+            add_peer_by_ip,
+            update_download_dir,
+            set_auto_accept,
+            toggle_trusted_device,
+            open_log_folder,
             chat::send_chat_message,
             chat::get_chat_history,
             chat::mark_thread_read,
             chat::get_unread_badges,
+            chat::send_typing_indicator,
+            chat::edit_chat_message,
+            chat::delete_chat_message,
+            chat::react_chat_message,
             transfer::pick_file_to_send,
+            transfer::pick_files_to_send,
+            transfer::pick_download_dir,
+            transfer::open_file,
+            transfer::show_in_folder,
+            transfer::save_clipboard_image,
+            transfer::get_chat_timeline,
             transfer::send_file_request,
             transfer::respond_file_transfer,
             transfer::start_file_upload,

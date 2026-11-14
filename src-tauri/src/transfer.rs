@@ -101,6 +101,7 @@ impl TransferManager {
                 file_size: t.file_size,
                 status: status_str.to_string(),
                 created_at: now_ms,
+                local_path: t.file_path.clone(),
             };
             let _ = db.save_transfer(&record);
         }
@@ -527,4 +528,84 @@ pub fn get_transfer_history(
 ) -> Result<Vec<crate::db::TransferRecord>, String> {
     let lim = limit.unwrap_or(100);
     db.get_transfers(lim).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn pick_files_to_send() -> Result<Vec<String>, String> {
+    let files = rfd::AsyncFileDialog::new().pick_files().await;
+    match files {
+        Some(handles) => {
+            let paths: Vec<String> = handles
+                .into_iter()
+                .map(|h| h.path().to_string_lossy().to_string())
+                .collect();
+            Ok(paths)
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+#[tauri::command]
+pub async fn pick_download_dir(
+    settings_state: State<'_, Arc<SettingsState>>,
+) -> Result<Option<String>, String> {
+    let folder = rfd::AsyncFileDialog::new().pick_folder().await;
+    if let Some(h) = folder {
+        let path = h.path().to_string_lossy().to_string();
+        settings_state.update_download_dir(path.clone())?;
+        Ok(Some(path))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub fn open_file(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_in_folder(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .args([&format!("/select,\"{}\"", path)])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_clipboard_image(bytes: Vec<u8>, ext: String) -> Result<String, String> {
+    let temp_dir = std::env::temp_dir();
+    let file_name = format!("xent_paste_{}.{}", Uuid::new_v4(), ext);
+    let path = temp_dir.join(file_name);
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn get_chat_timeline(
+    db: State<'_, Arc<Database>>,
+    peer_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<crate::db::TimelineItem>, String> {
+    let lim = limit.unwrap_or(200);
+    db.get_timeline(&peer_id, lim).map_err(|e| e.to_string())
 }

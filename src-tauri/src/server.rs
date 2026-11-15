@@ -1,10 +1,15 @@
 use crate::cert::TlsCertificate;
 use crate::db::{ChatMessage, Database};
 use crate::settings::{AppSettings, SettingsState};
-use crate::transfer::{FileTransferInfo, FileTransferRequest, FileTransferResponse, TransferManager, TransferStatus};
+use crate::discovery::DiscoveryManager;
+use crate::transfer::{
+    sanitize_file_name, spawn_upload, FileTransferInfo, FileTransferRequest, FileTransferResponse,
+    TransferManager, TransferStatus,
+};
 use axum::{
     body::Bytes,
-    extract::{Path, Query, State, WebSocketUpgrade},
+    extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -15,7 +20,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tower_http::cors::{Any, CorsLayer};
 
 fn default_status() -> String {
@@ -100,6 +105,35 @@ pub struct ServerState {
     pub settings_state: Option<Arc<SettingsState>>,
 }
 
+impl ServerState {
+    /// Always read the current settings. `self.settings` is only a snapshot taken
+    /// when the server started (it goes stale when the user changes the download
+    /// folder, favourites, etc.).
+    fn live_settings(&self) -> AppSettings {
+        match self.settings_state {
+            Some(ref st) => st.get_settings(),
+            None => self.settings.clone(),
+        }
+    }
+
+    fn is_blocked(&self, device_id: &str) -> bool {
+        match self.settings_state {
+            Some(ref st) => st.is_blocked(device_id),
+            None => self.settings.blocked_devices.iter().any(|d| d == device_id),
+        }
+    }
+
+    fn is_favorite(&self, device_id: &str) -> bool {
+        match self.settings_state {
+            Some(ref st) => st.is_favorite(device_id),
+            None => {
+                self.settings.favorite_devices.iter().any(|d| d == device_id)
+                    || self.settings.trusted_devices.iter().any(|d| d == device_id)
+            }
+        }
+    }
+}
+
 pub async fn start_server(
     settings: AppSettings,
     cert: TlsCertificate,
@@ -155,7 +189,7 @@ pub async fn start_server(
                 let config = rustls_config.clone();
                 tokio::spawn(async move {
                     if let Err(e) = axum_server::bind_rustls(addr, config)
-                        .serve(app.into_make_service())
+                        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
                         .await
                     {
                         eprintln!("[Server] HTTPS server error: {}", e);
@@ -204,6 +238,16 @@ async fn message_handler(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
+
+    // Blocked devices get a normal-looking ack, but nothing is stored or shown.
+    if state.is_blocked(&payload.sender_id) {
+        return Json(MessageAck {
+            success: true,
+            id: payload.id,
+            status: "delivered".to_string(),
+            timestamp: now,
+        });
+    }
 
     let chat_msg = ChatMessage {
         id: payload.id.clone(),
@@ -304,15 +348,30 @@ async fn reaction_handler(
 
 async fn file_request_handler(
     State(state): State<Arc<ServerState>>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(req): Json<FileTransferRequest>,
 ) -> Json<serde_json::Value> {
-    let download_dir = PathBuf::from(&state.settings.download_dir);
-    let mut dest_path = download_dir.join(&req.file_name);
+    // Blocked: pretend it was declined, do not reveal the block.
+    if state.is_blocked(&req.sender_id) {
+        return Json(serde_json::json!({
+            "success": true,
+            "transfer_id": req.transfer_id,
+            "auto_declined": true
+        }));
+    }
+
+    let settings = state.live_settings();
+    let download_dir = PathBuf::from(&settings.download_dir);
+    let _ = std::fs::create_dir_all(&download_dir);
+
+    // Never trust the remote file name: strip folders and illegal characters.
+    let safe_name = sanitize_file_name(&req.file_name);
+    let mut dest_path = download_dir.join(&safe_name);
 
     // File name deduplication if file already exists
     if dest_path.exists() {
-        let stem = dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-        let ext = dest_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let stem = dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("file").to_string();
+        let ext = dest_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_string();
         let mut counter = 1;
         loop {
             let new_name = if ext.is_empty() {
@@ -329,6 +388,28 @@ async fn file_request_handler(
         }
     }
 
+    // Where to send the answer: the address this request really came from.
+    // This works even if our discovery list does not know the sender (yet).
+    let peer_ip = remote.ip().to_canonical().to_string();
+    let peer_port = if req.sender_port != 0 {
+        req.sender_port
+    } else {
+        state
+            .app_handle
+            .as_ref()
+            .and_then(|h| h.try_state::<Arc<DiscoveryManager>>())
+            .and_then(|d| {
+                d.get_peers()
+                    .into_iter()
+                    .find(|p| p.device_id == req.sender_id)
+                    .map(|p| p.port)
+            })
+            .unwrap_or(53317)
+    };
+
+    // Favourites (or "accept everything") skip the permission prompt.
+    let auto_accept = settings.auto_accept || state.is_favorite(&req.sender_id);
+
     let transfer_info = FileTransferInfo {
         transfer_id: req.transfer_id.clone(),
         peer_id: req.sender_id.clone(),
@@ -336,20 +417,27 @@ async fn file_request_handler(
         sender_name: req.sender_name.clone(),
         receiver_id: req.receiver_id.clone(),
         receiver_name: req.receiver_name.clone(),
-        file_name: req.file_name.clone(),
+        file_name: safe_name,
         file_size: req.file_size,
         transferred_bytes: 0,
         speed_mbps: 0.0,
-        status: TransferStatus::Pending,
+        status: if auto_accept {
+            TransferStatus::Accepted
+        } else {
+            TransferStatus::Pending
+        },
         is_incoming: true,
         file_path: Some(dest_path.to_string_lossy().to_string()),
+        peer_ip,
+        peer_port,
     };
 
     state.transfer_mgr.add_transfer(transfer_info);
 
     Json(serde_json::json!({
         "success": true,
-        "transfer_id": req.transfer_id
+        "transfer_id": req.transfer_id,
+        "auto_accepted": auto_accept
     }))
 }
 
@@ -357,7 +445,25 @@ async fn file_response_handler(
     State(state): State<Arc<ServerState>>,
     Json(res): Json<FileTransferResponse>,
 ) -> Json<serde_json::Value> {
+    // Only the sender of an outgoing transfer may receive an answer.
+    let is_outgoing = state
+        .transfer_mgr
+        .get_transfer(&res.transfer_id)
+        .map(|t| !t.is_incoming)
+        .unwrap_or(false);
+    if !is_outgoing {
+        return Json(serde_json::json!({ "success": false, "error": "unknown transfer" }));
+    }
+
     state.transfer_mgr.handle_response(&res.transfer_id, res.accepted);
+
+    // Start sending right away. This no longer depends on the chat window
+    // being open, which is why files sometimes never left the sender.
+    if res.accepted {
+        if let Err(e) = spawn_upload(state.transfer_mgr.clone(), res.transfer_id.clone()) {
+            eprintln!("[Server] Failed to start upload: {}", e);
+        }
+    }
     Json(serde_json::json!({ "success": true }))
 }
 
@@ -366,8 +472,13 @@ async fn file_chunk_handler(
     Path(transfer_id): Path<String>,
     Query(query): Query<ChunkQuery>,
     body: Bytes,
-) -> Result<Json<serde_json::Value>, String> {
-    let updated = state.transfer_mgr.write_incoming_chunk(&transfer_id, query.offset, &body)?;
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Returning a bare `String` as the error produced HTTP 200, so the sender
+    // believed every chunk was saved even when the receiver failed to write it.
+    let updated = state
+        .transfer_mgr
+        .write_incoming_chunk(&transfer_id, query.offset, &body)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     Ok(Json(serde_json::json!({
         "success": true,
         "transferred": updated.transferred_bytes

@@ -107,6 +107,13 @@ p{margin:0}
 .btn:hover{opacity:0.9}
 .btn.ghost{background:var(--in);color:var(--tx);border:1px solid var(--line)}
 .btn.ghost:hover{background:var(--sel)}
+.fav-star{color:#f5b301}
+.row .pin{background:none;border:0;padding:2px;margin:0;cursor:pointer;color:var(--tx2);opacity:0;transition:opacity 120ms ease;display:flex}
+.row:hover .pin,.row .pin.on{opacity:1}
+.row .pin.on{color:#f5b301}
+.ico.on{color:#f5b301}
+.ico.danger.on{color:#e24b4a}
+.dev-line{display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--in);border-radius:10px}
 .lbl{font-size:11px;letter-spacing:.04em;color:var(--tx2);padding:8px 8px 4px;text-transform:uppercase}
 .row{display:flex;gap:10px;align-items:center;padding:8px;border-radius:14px;cursor:pointer;transition:background 150ms ease}
 .row:hover{background:var(--in)}
@@ -298,6 +305,10 @@ p{margin:0}
         <p class="t" id="chat-peer-name" style="font-size:15px">Select a device</p>
         <p class="s" id="chat-peer-status"><span id="chat-status-label" style="color:var(--ok);font-weight:600">Available</span> · <span id="chat-status-msg">Online on LAN</span></p>
       </div>
+      <button class="ico" id="btn-fav" aria-label="Favourite" title="Favourite: files from this device are accepted without asking"><i class="ti ti-star" style="font-size:18px"></i></button>
+      <button class="ico" id="btn-rename" aria-label="Rename device" title="Give this device your own name"><i class="ti ti-pencil" style="font-size:18px"></i></button>
+      <button class="ico danger" id="btn-block" aria-label="Block device" title="Block this device"><i class="ti ti-ban" style="font-size:18px"></i></button>
+      <button class="ico" id="btn-clear-chat" aria-label="Clear chat" title="Clear this conversation"><i class="ti ti-trash" style="font-size:18px"></i></button>
       <button class="ico" id="btn-attach-header" aria-label="Attach file" title="Attach file(s)"><i class="ti ti-paperclip" style="font-size:18px"></i></button>
     </header>
 
@@ -349,6 +360,7 @@ p{margin:0}
     <!-- Tabs Header -->
     <div class="nav-tabs">
       <button class="nav-tab active" data-tab="tab-general">General</button>
+      <button class="nav-tab" data-tab="tab-devices">Devices</button>
       <button class="nav-tab" data-tab="tab-files-cfg">Files</button>
       <button class="nav-tab" data-tab="tab-network">Network</button>
       <button class="nav-tab" data-tab="tab-about">About</button>
@@ -373,6 +385,18 @@ p{margin:0}
       </div>
     </div>
 
+    <!-- Tab: Devices -->
+    <div class="tab-pane" id="tab-devices">
+      <div>
+        <p class="s" style="margin-bottom:6px">Favourite devices (files accepted automatically)</p>
+        <div id="fav-list" style="display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+      <div>
+        <p class="s" style="margin-bottom:6px">Blocked devices</p>
+        <div id="blocked-list" style="display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+    </div>
+
     <!-- Tab 2: Files -->
     <div class="tab-pane" id="tab-files-cfg">
       <div>
@@ -383,10 +407,16 @@ p{margin:0}
         </div>
       </div>
       <div style="margin-top:6px">
+        <p class="s" style="font-size:12px;color:var(--tx);white-space:normal">Files from favourite devices are always accepted without asking.</p>
+      </div>
+      <div style="margin-top:6px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="chk-auto-accept" style="cursor:pointer">
-          <span class="s" style="font-size:12px;color:var(--tx)">Auto-accept file transfers from trusted devices</span>
+          <span class="s" style="font-size:12px;color:var(--tx);white-space:normal">Also auto-accept files from every other device (not recommended)</span>
         </label>
+      </div>
+      <div style="margin-top:6px">
+        <button class="btn ghost" id="btn-open-downloads" style="width:100%"><i class="ti ti-folder-open"></i>Open Downloads Folder</button>
       </div>
     </div>
 
@@ -448,6 +478,23 @@ p{margin:0}
 </div>
 
 <!-- Image Lightbox Modal -->
+<!-- Rename device modal -->
+<div class="modal-backdrop" id="modal-rename">
+  <div class="modal-box">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span class="t" style="font-size:16px">Name this device</span>
+      <button class="ico" id="close-rename"><i class="ti ti-x" style="font-size:18px"></i></button>
+    </div>
+    <p class="s" id="rename-orig" style="white-space:normal"></p>
+    <input class="modal-input" id="rename-input" maxlength="32" placeholder="e.g. My Laptop, Office PC">
+    <p class="s" style="white-space:normal">Only you see this name. Leave it empty to use the device's own name again.</p>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn ghost" id="btn-rename-reset">Reset</button>
+      <button class="btn" id="btn-rename-save">Save</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="modal-lightbox">
   <div style="max-width:85vw;max-height:85vh;position:relative;display:flex;align-items:center;justify-content:center">
     <img id="lightbox-img" src="" style="max-width:100%;max-height:80vh;border-radius:14px;box-shadow:var(--shadow)">
@@ -679,6 +726,39 @@ var modalLightbox = document.getElementById('modal-lightbox');
 var lightboxImg = document.getElementById('lightbox-img');
 var closeLightbox = document.getElementById('close-lightbox');
 
+// ----- Device names, favourites, blocking -----
+function nicknameOf(id) {
+  var n = (mySettings.device_nicknames || {})[id];
+  return (n && String(n).trim()) ? String(n).trim() : '';
+}
+function peerLabel(peer) {
+  if (!peer) return '';
+  return nicknameOf(peer.device_id) || peer.alias || 'Device';
+}
+function nameById(id, fallback) {
+  return nicknameOf(id) || (peersMap[id] && peersMap[id].alias) || fallback || 'Device';
+}
+function isFavorite(id) {
+  return (mySettings.favorite_devices || []).indexOf(id) !== -1 ||
+         (mySettings.trusted_devices || []).indexOf(id) !== -1;
+}
+function isBlocked(id) {
+  return (mySettings.blocked_devices || []).indexOf(id) !== -1;
+}
+function initialsOf(name) {
+  return (name || 'Node').split(' ').filter(Boolean).map(function(s){ return s[0]; }).join('').slice(0, 2).toUpperCase();
+}
+function invokeSettings(cmd, args) {
+  if (!window.__TAURI__ || !window.__TAURI__.core) return Promise.reject('Backend not connected');
+  return window.__TAURI__.core.invoke(cmd, args).then(function(s) {
+    mySettings = s;
+    renderPeerList();
+    refreshChatHeader();
+    renderDeviceLists();
+    return s;
+  });
+}
+
 function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -771,13 +851,21 @@ if (tabFiles) tabFiles.addEventListener('click', function(){ setRailTab(tabFiles
 
 // Peer List Rendering
 function renderPeerList() {
-  var peerList = Object.values(peersMap);
+  var peerList = Object.values(peersMap).filter(function(p) { return !isBlocked(p.device_id); });
   var q = (searchInput && searchInput.value || '').toLowerCase().trim();
   if (q) {
     peerList = peerList.filter(function(p){
-      return (p.alias || '').toLowerCase().indexOf(q) !== -1 || (p.status_message || '').toLowerCase().indexOf(q) !== -1;
+      return (p.alias || '').toLowerCase().indexOf(q) !== -1 ||
+             nicknameOf(p.device_id).toLowerCase().indexOf(q) !== -1 ||
+             (p.status_message || '').toLowerCase().indexOf(q) !== -1;
     });
   }
+  // Favourites first, then by name
+  peerList.sort(function(a, b) {
+    var fa = isFavorite(a.device_id) ? 0 : 1, fb = isFavorite(b.device_id) ? 0 : 1;
+    if (fa !== fb) return fa - fb;
+    return peerLabel(a).toLowerCase().localeCompare(peerLabel(b).toLowerCase());
+  });
 
   if (nearbyLabelEl) {
     nearbyLabelEl.textContent = 'Nearby, ' + Object.keys(peersMap).length + ' online';
@@ -812,12 +900,15 @@ function renderPeerList() {
 
   var html = '';
   peerList.forEach(function(peer) {
-    var inits = (peer.alias || 'Node').split(' ').map(function(s){ return s[0]; }).join('').slice(0, 2).toUpperCase();
+    var shownName = peerLabel(peer);
+    var inits = initialsOf(shownName);
     var bg = getAvatarColor(peer.alias);
     var pStat = peer.status || 'available';
     var pCol = STATUS_COLORS[pStat] || 'var(--ok)';
     var pLbl = STATUS_LABELS[pStat] || 'Available';
     var sub = (peer.status_message && peer.status_message.trim()) ? peer.status_message.trim() : pLbl;
+    if (nicknameOf(peer.device_id)) sub = peer.alias + ' · ' + sub;
+    var fav = isFavorite(peer.device_id);
     var isSel = peer.device_id === activePeerId ? ' sel' : '';
     var unread = unreadCounts[peer.device_id] || 0;
     var badgeHtml = unread > 0 ? '<span class="badge">' + unread + '</span>' : '';
@@ -827,10 +918,11 @@ function renderPeerList() {
         '<span class="dot" style="background:' + pCol + '"></span>' +
       '</div>' +
       '<div class="grow">' +
-        '<p class="t">' + escapeHtml(peer.alias) + '</p>' +
+        '<p class="t">' + escapeHtml(shownName) + '</p>' +
         '<p class="s">' + escapeHtml(sub) + '</p>' +
       '</div>' +
       badgeHtml +
+      '<button class="pin' + (fav ? ' on' : '') + '" data-fav="' + peer.device_id + '" title="' + (fav ? 'Remove from favourites' : 'Add to favourites') + '"><i class="ti ti-star' + (fav ? '-filled' : '') + '" style="font-size:16px"></i></button>' +
     '</div>';
   });
 
@@ -842,27 +934,39 @@ function renderPeerList() {
       selectPeer(id);
     });
   });
+  peerListEl.querySelectorAll('.pin').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      toggleFavorite(this.getAttribute('data-fav'));
+    });
+  });
 }
 
 if (searchInput) {
   searchInput.addEventListener('input', renderPeerList);
 }
 
-function selectPeer(peerId) {
-  activePeerId = peerId;
-  var peer = peersMap[peerId];
+function refreshChatHeader() {
+  var peer = activePeerId ? peersMap[activePeerId] : null;
+  var bFav = document.getElementById('btn-fav');
+  var bBlock = document.getElementById('btn-block');
+  [bFav, document.getElementById('btn-rename'), bBlock, document.getElementById('btn-clear-chat')].forEach(function(b) {
+    if (b) b.style.display = peer ? '' : 'none';
+  });
   if (!peer) return;
 
-  var inits = (peer.alias || 'Node').split(' ').map(function(s){ return s[0]; }).join('').slice(0, 2).toUpperCase();
-  var bg = getAvatarColor(peer.alias);
+  var name = peerLabel(peer);
   var pStat = peer.status || 'available';
   var pCol = STATUS_COLORS[pStat] || 'var(--ok)';
   var pLbl = STATUS_LABELS[pStat] || 'Available';
 
-  if (chatAvEl) chatAvEl.style.background = bg;
-  if (chatAvText) chatAvText.textContent = inits;
+  if (chatAvEl) chatAvEl.style.background = getAvatarColor(peer.alias);
+  if (chatAvText) chatAvText.textContent = initialsOf(name);
   if (chatDot) chatDot.style.background = pCol;
-  if (chatPeerNameEl) chatPeerNameEl.textContent = peer.alias;
+  if (chatPeerNameEl) {
+    chatPeerNameEl.textContent = name + (isFavorite(peer.device_id) ? ' ★' : '');
+    chatPeerNameEl.title = nicknameOf(peer.device_id) ? 'Original name: ' + peer.alias : '';
+  }
   if (chatStatusLabel) {
     chatStatusLabel.textContent = pLbl;
     chatStatusLabel.style.color = pCol;
@@ -870,9 +974,23 @@ function selectPeer(peerId) {
   if (chatStatusMsg) {
     chatStatusMsg.textContent = peer.status_message ? peer.status_message : (peer.ip + ':' + peer.port);
   }
-  if (composeInput) composeInput.placeholder = 'Message ' + peer.alias;
+  if (composeInput) composeInput.placeholder = 'Message ' + name;
+
+  if (bFav) {
+    var fav = isFavorite(peer.device_id);
+    bFav.classList.toggle('on', fav);
+    bFav.querySelector('i').className = 'ti ti-star' + (fav ? '-filled' : '');
+    bFav.title = fav ? 'Favourite: files are accepted automatically (click to remove)' : 'Add to favourites: files are accepted without asking';
+  }
+}
+
+function selectPeer(peerId) {
+  activePeerId = peerId;
+  var peer = peersMap[peerId];
+  if (!peer) return;
 
   unreadCounts[peerId] = 0;
+  refreshChatHeader();
   renderPeerList();
 
   if (window.__TAURI__ && window.__TAURI__.core) {
@@ -881,13 +999,117 @@ function selectPeer(peerId) {
   }
 }
 
+function toggleFavorite(id) {
+  invokeSettings('toggle_favorite_device', { deviceId: id }).then(function() {
+    showToast(isFavorite(id) ? 'Added to favourites. Files will be accepted automatically.' : 'Removed from favourites');
+  }).catch(function(e) { showToast('Error: ' + e); });
+}
+
+function toggleBlock(id) {
+  var wasBlocked = isBlocked(id);
+  var name = nameById(id, 'this device');
+  if (!wasBlocked && !confirm('Block ' + name + '? Their messages and files will be ignored.')) return;
+  invokeSettings('toggle_blocked_device', { deviceId: id }).then(function() {
+    showToast(wasBlocked ? 'Unblocked ' + name : 'Blocked ' + name);
+    if (!wasBlocked && activePeerId === id) {
+      var rest = Object.keys(peersMap).filter(function(k) { return !isBlocked(k); });
+      activePeerId = null;
+      if (rest.length) selectPeer(rest[0]);
+    }
+  }).catch(function(e) { showToast('Error: ' + e); });
+}
+
+// Rename modal
+var modalRename = document.getElementById('modal-rename');
+var renameInput = document.getElementById('rename-input');
+var renameOrig = document.getElementById('rename-orig');
+var renameTarget = null;
+
+function openRename(id) {
+  var peer = peersMap[id];
+  renameTarget = id;
+  if (renameOrig) renameOrig.textContent = peer ? 'Device name on the network: ' + peer.alias : '';
+  if (renameInput) { renameInput.value = nicknameOf(id); }
+  modalRename.classList.add('show');
+  if (renameInput) renameInput.focus();
+}
+function saveRename(value) {
+  if (!renameTarget) return;
+  invokeSettings('set_device_nickname', { deviceId: renameTarget, nickname: value }).then(function() {
+    modalRename.classList.remove('show');
+    showToast(value ? 'Saved' : 'Name reset');
+  }).catch(function(e) { showToast('Error: ' + e); });
+}
+
+(function wireHeaderButtons() {
+  var bFav = document.getElementById('btn-fav');
+  var bRen = document.getElementById('btn-rename');
+  var bBlock = document.getElementById('btn-block');
+  var bClear = document.getElementById('btn-clear-chat');
+  if (bFav) bFav.addEventListener('click', function() { if (activePeerId) toggleFavorite(activePeerId); });
+  if (bRen) bRen.addEventListener('click', function() { if (activePeerId) openRename(activePeerId); });
+  if (bBlock) bBlock.addEventListener('click', function() { if (activePeerId) toggleBlock(activePeerId); });
+  if (bClear) bClear.addEventListener('click', function() {
+    if (!activePeerId) return;
+    if (!confirm('Delete all messages and file history with ' + nameById(activePeerId) + '? This cannot be undone.')) return;
+    var id = activePeerId;
+    window.__TAURI__.core.invoke('clear_chat_history', { peerId: id }).then(function() {
+      Object.keys(activeTransfers).forEach(function(k) { if (activeTransfers[k].peer_id === id) delete activeTransfers[k]; });
+      loadChatTimeline(id);
+      showToast('Conversation cleared');
+    }).catch(function(e) { showToast('Error: ' + e); });
+  });
+  var cr = document.getElementById('close-rename');
+  if (cr) cr.addEventListener('click', function() { modalRename.classList.remove('show'); });
+  var rs = document.getElementById('btn-rename-save');
+  if (rs) rs.addEventListener('click', function() { saveRename((renameInput.value || '').trim()); });
+  var rr = document.getElementById('btn-rename-reset');
+  if (rr) rr.addEventListener('click', function() { saveRename(''); });
+  if (renameInput) renameInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); saveRename((renameInput.value || '').trim()); }
+  });
+})();
+
+// Settings -> Devices tab
+function renderDeviceLists() {
+  var favEl = document.getElementById('fav-list');
+  var blkEl = document.getElementById('blocked-list');
+  if (!favEl || !blkEl) return;
+  var favs = [];
+  (mySettings.favorite_devices || []).concat(mySettings.trusted_devices || []).forEach(function(id) {
+    if (favs.indexOf(id) === -1) favs.push(id);
+  });
+  var blocked = mySettings.blocked_devices || [];
+
+  function line(id, action, label) {
+    var nick = nicknameOf(id);
+    var peer = peersMap[id];
+    var title = nick || (peer && peer.alias) || ('Device ' + id.slice(0, 8));
+    var sub = peer ? (nick ? peer.alias + ' · online' : 'online') : 'not nearby';
+    return '<div class="dev-line"><div class="grow"><p class="t" style="font-size:12.5px">' + escapeHtml(title) + '</p>' +
+      '<p class="s">' + escapeHtml(sub) + '</p></div>' +
+      '<button class="btn ghost" style="padding:4px 10px;font-size:11.5px" data-act="' + action + '" data-id="' + id + '">' + label + '</button></div>';
+  }
+  favEl.innerHTML = favs.length ? favs.map(function(id) { return line(id, 'unfav', 'Remove'); }).join('') :
+    '<p class="s" style="white-space:normal">No favourites yet. Tap the star next to a device.</p>';
+  blkEl.innerHTML = blocked.length ? blocked.map(function(id) { return line(id, 'unblock', 'Unblock'); }).join('') :
+    '<p class="s" style="white-space:normal">No blocked devices.</p>';
+
+  document.querySelectorAll('#tab-devices [data-act]').forEach(function(b) {
+    b.addEventListener('click', function() {
+      var id = this.getAttribute('data-id');
+      if (this.getAttribute('data-act') === 'unfav') toggleFavorite(id); else toggleBlock(id);
+    });
+  });
+}
+
 // Chat rendering & Timeline
 function renderMessage(msg) {
   var wrap = document.createElement('div');
   wrap.className = 'msg-wrap ' + (msg.is_incoming ? 'bin' : 'bout');
   wrap.id = 'msg-' + msg.id;
 
-  var whoName = msg.is_incoming ? escapeHtml(msg.sender_name) : 'You (' + escapeHtml(mySettings.alias) + ')';
+  var whoName = msg.is_incoming ? escapeHtml(nameById(msg.thread_peer_id, msg.sender_name)) : 'You (' + escapeHtml(mySettings.alias) + ')';
   var quoteHtml = msg.quote ? '<div class="quote-banner">' + escapeHtml(msg.quote) + '</div>' : '';
   var editedHtml = msg.is_edited ? ' <span style="font-size:10.5px;opacity:0.8">(edited)</span>' : '';
   var statusLine = !msg.is_incoming ? '<p class="s" style="margin-top:3px">' + escapeHtml(msg.status) + '</p>' : '';
@@ -981,6 +1203,21 @@ function deleteMessageAction(messageId) {
   }
 }
 
+function retryHtml(t) {
+  return '<div class="acts"><button class="btn ghost btn-retry" data-peer="' + escapeHtml(t.peer_id) + '" data-path="' + escapeHtml(t.file_path) + '"><i class="ti ti-refresh"></i>Try again</button></div>';
+}
+
+// One place that sends a file, so errors are always shown to the user.
+function sendOneFile(peerId, path) {
+  if (!window.__TAURI__ || !window.__TAURI__.core) { showToast('Backend not connected'); return; }
+  window.__TAURI__.core.invoke('send_file_request', { peerId: peerId, filePath: path })
+    .then(function(info) {
+      activeTransfers[info.transfer_id] = info;
+      if (info.peer_id === activePeerId) renderFileCard(info);
+    })
+    .catch(function(e) { showToast('File not sent: ' + e); });
+}
+
 function renderFileCard(t) {
   var card = document.getElementById('transfer-' + t.transfer_id);
   if (!card) {
@@ -993,7 +1230,8 @@ function renderFileCard(t) {
   var iconClass = getFileIcon(t.file_name);
   var pct = t.file_size > 0 ? Math.min(100, Math.round((t.transferred_bytes / t.file_size) * 100)) : 0;
   var speedText = t.speed_mbps > 0 ? t.speed_mbps.toFixed(1) + ' MB/s' : '';
-  var subInfo = escapeHtml(t.sender_name) + ' to ' + escapeHtml(t.receiver_name) + ' · ' + formatBytes(t.file_size);
+  var otherName = nameById(t.peer_id, t.is_incoming ? t.sender_name : t.receiver_name);
+  var subInfo = (t.is_incoming ? escapeHtml(otherName) + ' to You' : 'You to ' + escapeHtml(otherName)) + ' · ' + formatBytes(t.file_size);
   if (speedText) subInfo += ' · ' + speedText;
 
   var statusText = '';
@@ -1010,14 +1248,11 @@ function renderFileCard(t) {
       statusText = 'Waiting for recipient to accept...';
     }
   } else if (t.status === 'Accepted') {
+    // The backend starts the upload by itself as soon as the file is accepted.
     statusText = 'Accepted, preparing transfer...';
-    if (!t.is_incoming) {
-      if (window.__TAURI__ && window.__TAURI__.core) {
-        window.__TAURI__.core.invoke('start_file_upload', { transferId: t.transfer_id }).catch(console.error);
-      }
-    }
   } else if (t.status === 'Declined') {
     statusText = 'Transfer declined';
+    if (!t.is_incoming && t.file_path) actsHtml = retryHtml(t);
   } else if (t.status === 'Transferring') {
     var rem = t.file_size - t.transferred_bytes;
     var secLeft = t.speed_mbps > 0 ? Math.ceil((rem / (1024 * 1024)) / t.speed_mbps) : 0;
@@ -1033,8 +1268,10 @@ function renderFileCard(t) {
     }
   } else if (t.status === 'Cancelled') {
     statusText = 'Transfer cancelled';
+    if (!t.is_incoming && t.file_path) actsHtml = retryHtml(t);
   } else if (typeof t.status === 'object' && t.status.Failed) {
     statusText = 'Failed: ' + t.status.Failed;
+    if (!t.is_incoming && t.file_path) actsHtml = retryHtml(t);
   }
 
   var cancelBtn = (t.status === 'Transferring' || t.status === 'Pending') ?
@@ -1057,7 +1294,8 @@ function renderFileCard(t) {
     bAcc.addEventListener('click', function() {
       var id = this.getAttribute('data-id');
       if (window.__TAURI__ && window.__TAURI__.core) {
-        window.__TAURI__.core.invoke('respond_file_transfer', { transferId: id, accepted: true }).catch(console.error);
+        window.__TAURI__.core.invoke('respond_file_transfer', { transferId: id, accepted: true })
+          .catch(function(e) { showToast('Could not accept: ' + e); });
       }
     });
   }
@@ -1067,8 +1305,18 @@ function renderFileCard(t) {
     bDec.addEventListener('click', function() {
       var id = this.getAttribute('data-id');
       if (window.__TAURI__ && window.__TAURI__.core) {
-        window.__TAURI__.core.invoke('respond_file_transfer', { transferId: id, accepted: false }).catch(console.error);
+        window.__TAURI__.core.invoke('respond_file_transfer', { transferId: id, accepted: false })
+          .catch(function(e) { showToast('Could not decline: ' + e); });
       }
+    });
+  }
+
+  var bRetry = card.querySelector('.btn-retry');
+  if (bRetry) {
+    bRetry.addEventListener('click', function() {
+      var path = this.getAttribute('data-path');
+      var peer = this.getAttribute('data-peer');
+      sendOneFile(peer, path);
     });
   }
 
@@ -1221,15 +1469,7 @@ function triggerFilePicker() {
 
   window.__TAURI__.core.invoke('pick_files_to_send').then(function(paths) {
     if (paths && paths.length > 0) {
-      paths.forEach(function(path) {
-        window.__TAURI__.core.invoke('send_file_request', {
-          peerId: activePeerId,
-          filePath: path
-        }).then(function(info) {
-          activeTransfers[info.transfer_id] = info;
-          renderFileCard(info);
-        }).catch(console.error);
-      });
+      paths.forEach(function(path) { sendOneFile(activePeerId, path); });
     }
   }).catch(console.error);
 }
@@ -1248,7 +1488,7 @@ if (chatPanel) {
       e.preventDefault();
       e.stopPropagation();
       if (activePeerId && peersMap[activePeerId]) {
-        dropPeerName.textContent = peersMap[activePeerId].alias;
+        dropPeerName.textContent = peerLabel(peersMap[activePeerId]);
         dropOverlay.style.display = 'flex';
       }
     });
@@ -1267,15 +1507,7 @@ if (window.__TAURI__ && window.__TAURI__.event) {
   window.__TAURI__.event.listen('tauri://drag-drop', function(event) {
     var paths = event.payload && event.payload.paths ? event.payload.paths : [];
     if (paths && paths.length > 0 && activePeerId) {
-      paths.forEach(function(p) {
-        window.__TAURI__.core.invoke('send_file_request', {
-          peerId: activePeerId,
-          filePath: p
-        }).then(function(info) {
-          activeTransfers[info.transfer_id] = info;
-          renderFileCard(info);
-        }).catch(console.error);
-      });
+      paths.forEach(function(p) { sendOneFile(activePeerId, p); });
     }
   });
 }
@@ -1295,13 +1527,7 @@ window.addEventListener('paste', function(e) {
         var ext = item.type.split('/')[1] || 'png';
         if (window.__TAURI__ && window.__TAURI__.core) {
           window.__TAURI__.core.invoke('save_clipboard_image', { bytes: bytes, ext: ext }).then(function(path) {
-            window.__TAURI__.core.invoke('send_file_request', {
-              peerId: activePeerId,
-              filePath: path
-            }).then(function(info) {
-              activeTransfers[info.transfer_id] = info;
-              renderFileCard(info);
-            }).catch(console.error);
+            sendOneFile(activePeerId, path);
           }).catch(console.error);
         }
       };
@@ -1406,6 +1632,7 @@ if (btnSettings) {
       if (settingDownloadDir) settingDownloadDir.value = mySettings.download_dir || '';
       if (chkAutoAccept) chkAutoAccept.checked = !!mySettings.auto_accept;
     }
+    renderDeviceLists();
     settingsModal.classList.add('show');
   });
 }
@@ -1444,6 +1671,14 @@ if (chkAutoAccept) {
       window.__TAURI__.core.invoke('set_auto_accept', { enabled: chkAutoAccept.checked }).then(function(s) {
         mySettings = s;
       }).catch(console.error);
+    }
+  });
+}
+var btnOpenDownloads = document.getElementById('btn-open-downloads');
+if (btnOpenDownloads) {
+  btnOpenDownloads.addEventListener('click', function() {
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('open_downloads_folder').catch(function(e) { showToast('Error: ' + e); });
     }
   });
 }
@@ -1508,8 +1743,11 @@ window.addEventListener('keydown', function(e) {
 
 // Initialization and Event Subscriptions
 if (window.__TAURI__ && window.__TAURI__.core) {
+  refreshChatHeader();
   window.__TAURI__.core.invoke('get_device_info').then(function(info) {
     updateMyPresenceUI(info);
+    renderPeerList();
+    refreshChatHeader();
   }).catch(console.error);
 
   window.__TAURI__.core.invoke('get_nearby_devices').then(function(devices) {
@@ -1530,25 +1768,14 @@ if (window.__TAURI__ && window.__TAURI__.core) {
       peersMap = newMap;
 
       if (activePeerId && !peersMap[activePeerId]) {
-        var rem = Object.keys(peersMap);
+        var rem = Object.keys(peersMap).filter(function(k) { return !isBlocked(k); });
         if (rem.length > 0) {
           selectPeer(rem[0]);
         } else {
           activePeerId = null;
         }
       } else if (activePeerId && peersMap[activePeerId]) {
-        var p = peersMap[activePeerId];
-        var pStat = p.status || 'available';
-        var pCol = STATUS_COLORS[pStat] || 'var(--ok)';
-        var pLbl = STATUS_LABELS[pStat] || 'Available';
-        if (chatDot) chatDot.style.background = pCol;
-        if (chatStatusLabel) {
-          chatStatusLabel.textContent = pLbl;
-          chatStatusLabel.style.color = pCol;
-        }
-        if (chatStatusMsg) {
-          chatStatusMsg.textContent = p.status_message ? p.status_message : (p.ip + ':' + p.port);
-        }
+        refreshChatHeader();
       }
       renderPeerList();
     });
@@ -1656,9 +1883,15 @@ if (window.__TAURI__ && window.__TAURI__.core) {
     window.__TAURI__.event.listen('file_transfer_progress', function(event) {
       var info = event.payload;
       if (!info) return;
+      var isNew = !activeTransfers[info.transfer_id];
       activeTransfers[info.transfer_id] = info;
       if (info.peer_id === activePeerId) {
         renderFileCard(info);
+      } else if (isNew && info.is_incoming) {
+        // The offer belongs to a chat that is not open: tell the user.
+        unreadCounts[info.peer_id] = (unreadCounts[info.peer_id] || 0) + 1;
+        showToast((info.status === 'Pending' ? 'Incoming file from ' : 'Receiving file from ') + nameById(info.peer_id, info.sender_name));
+        renderPeerList();
       }
     });
   }

@@ -359,6 +359,14 @@ impl Database {
         Ok(results)
     }
 
+    /// Delete every message and file record of one conversation.
+    pub fn clear_thread(&self, peer_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM messages WHERE thread_peer_id = ?1", params![peer_id])?;
+        conn.execute("DELETE FROM transfers WHERE peer_id = ?1", params![peer_id])?;
+        Ok(())
+    }
+
     pub fn get_timeline(&self, peer_id: &str, limit: usize) -> Result<Vec<TimelineItem>, rusqlite::Error> {
         let messages = self.get_messages(peer_id, limit)?;
         

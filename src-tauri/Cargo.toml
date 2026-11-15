@@ -1,6 +1,6 @@
 [package]
 name = "xent"
-version = "0.2.1"
+version = "0.2.2"
 description = "Xent - Fast, lightweight LAN messenger and file sharing"
 authors = ["Golam Mowla"]
 license = "MIT"
@@ -35,7 +35,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 log = "0.4"
-socket2 = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
 sha2 = "0.10"
 hex = "0.4"
 rfd = "0.15"

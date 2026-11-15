@@ -2,7 +2,7 @@ use crate::db::Database;
 use crate::discovery::DiscoveryManager;
 use crate::settings::SettingsState;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -39,6 +39,12 @@ pub struct FileTransferInfo {
     pub status: TransferStatus,
     pub is_incoming: bool,
     pub file_path: Option<String>,
+    /// Where the other device can be reached for this transfer.
+    /// Stored per transfer so the flow never depends on the discovery list.
+    #[serde(default)]
+    pub peer_ip: String,
+    #[serde(default)]
+    pub peer_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +56,9 @@ pub struct FileTransferRequest {
     pub receiver_name: String,
     pub file_name: String,
     pub file_size: u64,
+    /// Port of the sender's Xent server (0 = unknown / older client).
+    #[serde(default)]
+    pub sender_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,8 +72,39 @@ pub struct TransferManager {
     cancellations: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
     response_notifiers: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
     response_results: Arc<RwLock<HashMap<String, bool>>>,
+    uploads_started: Arc<RwLock<HashSet<String>>>,
     app_handle: Option<AppHandle>,
     db: Option<Arc<Database>>,
+}
+
+/// Strip any directory part and characters that are illegal in file names,
+/// so a remote device can never write outside the download folder.
+pub fn sanitize_file_name(name: &str) -> String {
+    let last = name.rsplit(|c| c == '/' || c == '\\').next().unwrap_or("");
+    let cleaned: String = last
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+        .collect();
+    let mut cleaned = cleaned.trim().trim_matches('.').trim().to_string();
+    if cleaned.chars().count() > 200 {
+        cleaned = cleaned.chars().take(200).collect();
+    }
+    if cleaned.is_empty() {
+        return "file".to_string();
+    }
+    let stem_upper = cleaned
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let reserved = matches!(stem_upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem_upper.len() == 4
+            && (stem_upper.starts_with("COM") || stem_upper.starts_with("LPT"))
+            && stem_upper.chars().last().map_or(false, |c| c.is_ascii_digit()));
+    if reserved {
+        cleaned = format!("_{}", cleaned);
+    }
+    cleaned
 }
 
 impl TransferManager {
@@ -74,6 +114,7 @@ impl TransferManager {
             cancellations: Arc::new(RwLock::new(HashMap::new())),
             response_notifiers: Arc::new(RwLock::new(HashMap::new())),
             response_results: Arc::new(RwLock::new(HashMap::new())),
+            uploads_started: Arc::new(RwLock::new(HashSet::new())),
             app_handle,
             db,
         }
@@ -186,6 +227,11 @@ impl TransferManager {
     ) {
         let mut lock = self.transfers.write().unwrap();
         if let Some(t) = lock.get_mut(transfer_id) {
+            if t.status == TransferStatus::Cancelled
+                && matches!(status, TransferStatus::Transferring | TransferStatus::Accepted)
+            {
+                return;
+            }
             t.transferred_bytes = transferred_bytes;
             t.speed_mbps = speed_mbps;
             t.status = status;
@@ -194,6 +240,23 @@ impl TransferManager {
             }
             self.maybe_record_history(t);
         }
+    }
+
+    /// Returns true only the first time it is called for a transfer,
+    /// so an upload can never be started twice.
+    pub fn try_begin_upload(&self, transfer_id: &str) -> bool {
+        self.uploads_started
+            .write()
+            .unwrap()
+            .insert(transfer_id.to_string())
+    }
+
+    pub fn mark_failed(&self, transfer_id: &str, reason: &str) {
+        let sent = self
+            .get_transfer(transfer_id)
+            .map(|t| t.transferred_bytes)
+            .unwrap_or(0);
+        self.update_progress(transfer_id, sent, 0.0, TransferStatus::Failed(reason.to_string()));
     }
 
     pub fn get_transfer(&self, transfer_id: &str) -> Option<FileTransferInfo> {
@@ -206,14 +269,19 @@ impl TransferManager {
         offset: u64,
         data: &[u8],
     ) -> Result<FileTransferInfo, String> {
-        let path_str = {
+        let (path_str, just_completed) = {
             let mut lock = self.transfers.write().unwrap();
             let t = lock
                 .get_mut(transfer_id)
                 .ok_or_else(|| "Transfer not found".to_string())?;
 
-            if t.status == TransferStatus::Cancelled {
-                return Err("Transfer cancelled".to_string());
+            match t.status {
+                TransferStatus::Accepted | TransferStatus::Transferring | TransferStatus::Completed => {}
+                TransferStatus::Cancelled => return Err("Transfer cancelled".to_string()),
+                _ => return Err("Transfer was not accepted".to_string()),
+            }
+            if !t.is_incoming {
+                return Err("Not an incoming transfer".to_string());
             }
 
             let p = t
@@ -222,15 +290,20 @@ impl TransferManager {
                 .ok_or_else(|| "Destination file path not set".to_string())?
                 .clone();
 
-            t.transferred_bytes = offset + data.len() as u64;
+            let was_completed = t.status == TransferStatus::Completed;
+            t.transferred_bytes = t.transferred_bytes.max(offset + data.len() as u64);
             t.status = if t.transferred_bytes >= t.file_size {
                 TransferStatus::Completed
             } else {
                 TransferStatus::Transferring
             };
 
-            p
+            (p, t.status == TransferStatus::Completed && !was_completed)
         };
+
+        if let Some(parent) = std::path::Path::new(&path_str).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
 
         let mut file = OpenOptions::new()
             .create(true)
@@ -244,9 +317,15 @@ impl TransferManager {
         file.write_all(data)
             .map_err(|e| format!("Failed to write chunk: {}", e))?;
 
-        let updated = self.get_transfer(transfer_id).unwrap();
+        let updated = self
+            .get_transfer(transfer_id)
+            .ok_or_else(|| "Transfer not found".to_string())?;
         if let Some(ref handle) = self.app_handle {
             let _ = handle.emit("file_transfer_progress", updated.clone());
+        }
+        if just_completed {
+            // Incoming files used to be missing from the history.
+            self.maybe_record_history(&updated);
         }
 
         Ok(updated)
@@ -287,7 +366,7 @@ pub async fn send_file_request(
     let peer = peers
         .iter()
         .find(|p| p.device_id == peer_id)
-        .ok_or_else(|| "Peer not found or offline".to_string())?
+        .ok_or_else(|| "Device not found or offline".to_string())?
         .clone();
 
     let transfer_id = Uuid::new_v4().to_string();
@@ -306,6 +385,8 @@ pub async fn send_file_request(
         status: TransferStatus::Pending,
         is_incoming: false,
         file_path: Some(file_path),
+        peer_ip: peer.ip.clone(),
+        peer_port: peer.port,
     };
 
     transfer_mgr.add_transfer(transfer_info.clone());
@@ -324,27 +405,42 @@ pub async fn send_file_request(
         receiver_name: peer.alias.clone(),
         file_name,
         file_size,
+        sender_port: my_settings.port,
     };
 
     let url = format!("https://{}:{}/api/files/request", peer.ip, peer.port);
-    let res = client
-        .post(&url)
-        .json(&req_body)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to send file request to peer: {}", e))?;
+    let res = match client.post(&url).json(&req_body).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            // Previously this failed silently and the card stayed on "waiting" forever.
+            transfer_mgr.mark_failed(&transfer_id, "Could not reach the other device");
+            return Err(format!("Could not reach {}: {}", peer.alias, e));
+        }
+    };
 
     if !res.status().is_success() {
-        return Err(format!("Peer rejected request with status: {}", res.status()));
+        let code = res.status();
+        transfer_mgr.mark_failed(&transfer_id, "The other device rejected the request");
+        return Err(format!("{} rejected the request ({})", peer.alias, code));
     }
 
-    Ok(transfer_info)
+    // Favourite devices (or "accept everything") answer right away.
+    let ack: serde_json::Value = res.json().await.unwrap_or(serde_json::Value::Null);
+    let flag = |name: &str| ack.get(name).and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if flag("auto_declined") {
+        transfer_mgr.handle_response(&transfer_id, false);
+    } else if flag("auto_accepted") {
+        transfer_mgr.handle_response(&transfer_id, true);
+        spawn_upload(transfer_mgr.inner().clone(), transfer_id.clone())?;
+    }
+
+    Ok(transfer_mgr.get_transfer(&transfer_id).unwrap_or(transfer_info))
 }
 
 #[tauri::command]
 pub async fn respond_file_transfer(
     transfer_mgr: State<'_, Arc<TransferManager>>,
-    discovery_mgr: State<'_, Arc<DiscoveryManager>>,
     transfer_id: String,
     accepted: bool,
 ) -> Result<(), String> {
@@ -352,11 +448,12 @@ pub async fn respond_file_transfer(
         .get_transfer(&transfer_id)
         .ok_or_else(|| "Transfer not found".to_string())?;
 
-    let peers = discovery_mgr.get_peers();
-    let peer = peers
-        .iter()
-        .find(|p| p.device_id == transfer.peer_id)
-        .ok_or_else(|| "Sender peer is offline".to_string())?;
+    if !transfer.is_incoming {
+        return Err("This is not an incoming transfer".to_string());
+    }
+    if transfer.peer_ip.is_empty() || transfer.peer_port == 0 {
+        return Err("Sender address unknown".to_string());
+    }
 
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -369,52 +466,106 @@ pub async fn respond_file_transfer(
         accepted,
     };
 
-    let url = format!("https://{}:{}/api/files/response", peer.ip, peer.port);
-    let _ = client.post(&url).json(&resp_body).send().await;
+    let url = format!(
+        "https://{}:{}/api/files/response",
+        transfer.peer_ip, transfer.peer_port
+    );
 
-    transfer_mgr.handle_response(&transfer_id, accepted);
-    Ok(())
+    // Only mark the transfer accepted locally if the sender really got the answer.
+    // Before, a failed request was ignored: this side showed "Accepted" while
+    // the sender stayed on "Waiting..." forever.
+    match client.post(&url).json(&resp_body).send().await {
+        Ok(r) if r.status().is_success() => {
+            transfer_mgr.handle_response(&transfer_id, accepted);
+            Ok(())
+        }
+        Ok(r) => Err(format!("Sender answered with status {}", r.status())),
+        Err(e) => Err(format!(
+            "Could not reach {}: {}",
+            transfer.sender_name, e
+        )),
+    }
 }
 
+/// Kept for compatibility. The sender's backend now starts the upload by itself
+/// as soon as the receiver accepts, so this is safe to call but not required.
 #[tauri::command]
 pub async fn start_file_upload(
     transfer_mgr: State<'_, Arc<TransferManager>>,
-    discovery_mgr: State<'_, Arc<DiscoveryManager>>,
     transfer_id: String,
 ) -> Result<(), String> {
-    let transfer = transfer_mgr
+    spawn_upload(transfer_mgr.inner().clone(), transfer_id)
+}
+
+const UPLOAD_CHUNK_SIZE: usize = 512 * 1024;
+const UPLOAD_CHUNK_RETRIES: u32 = 3;
+
+async fn post_chunk(
+    client: &reqwest::Client,
+    base: &str,
+    transfer_id: &str,
+    offset: u64,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let url = format!("{}/api/files/chunk/{}?offset={}", base, transfer_id, offset);
+    let res = client
+        .post(&url)
+        .body(data)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+    if res.status().is_success() {
+        return Ok(());
+    }
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    Err(if body.trim().is_empty() {
+        format!("Receiver rejected the data ({})", status)
+    } else {
+        body
+    })
+}
+
+/// Starts uploading an accepted outgoing transfer in the background.
+/// Idempotent: calling it again for the same transfer does nothing.
+pub fn spawn_upload(mgr: Arc<TransferManager>, transfer_id: String) -> Result<(), String> {
+    let transfer = mgr
         .get_transfer(&transfer_id)
         .ok_or_else(|| "Transfer not found".to_string())?;
 
-    let file_path_str = transfer
-        .file_path
-        .clone()
-        .ok_or_else(|| "Source file path missing".to_string())?;
+    if transfer.is_incoming {
+        return Err("Cannot upload an incoming transfer".to_string());
+    }
+    if !mgr.try_begin_upload(&transfer_id) {
+        return Ok(());
+    }
 
-    let peers = discovery_mgr.get_peers();
-    let peer = peers
-        .iter()
-        .find(|p| p.device_id == transfer.peer_id)
-        .ok_or_else(|| "Receiver peer is offline".to_string())?
-        .clone();
+    let file_path = match transfer.file_path.clone() {
+        Some(p) => p,
+        None => {
+            mgr.mark_failed(&transfer_id, "Source file path missing");
+            return Err("Source file path missing".to_string());
+        }
+    };
+    if transfer.peer_ip.is_empty() || transfer.peer_port == 0 {
+        mgr.mark_failed(&transfer_id, "Receiver address unknown");
+        return Err("Receiver address unknown".to_string());
+    }
 
-    let cancel_flag = transfer_mgr.register_cancellation(&transfer_id);
-    let mgr_clone = transfer_mgr.inner().clone();
-    let t_id = transfer_id.clone();
+    let cancel_flag = mgr.register_cancellation(&transfer_id);
+    let base = format!("https://{}:{}", transfer.peer_ip, transfer.peer_port);
+    let file_size = transfer.file_size;
 
     tokio::spawn(async move {
-        let mut file = match File::open(&file_path_str) {
+        let t_id = transfer_id;
+
+        let mut file = match File::open(&file_path) {
             Ok(f) => f,
             Err(e) => {
-                mgr_clone.update_progress(&t_id, 0, 0.0, TransferStatus::Failed(e.to_string()));
+                mgr.mark_failed(&t_id, &format!("Cannot open file: {}", e));
                 return;
             }
         };
-
-        let chunk_size: usize = 512 * 1024; // 512 KB chunks
-        let mut buffer = vec![0u8; chunk_size];
-        let mut offset: u64 = 0;
-        let start_time = Instant::now();
 
         let client = match reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
@@ -423,73 +574,78 @@ pub async fn start_file_upload(
         {
             Ok(c) => c,
             Err(e) => {
-                mgr_clone.update_progress(&t_id, 0, 0.0, TransferStatus::Failed(e.to_string()));
+                mgr.mark_failed(&t_id, &e.to_string());
                 return;
             }
         };
 
-        mgr_clone.update_progress(&t_id, 0, 0.0, TransferStatus::Transferring);
+        mgr.update_progress(&t_id, 0, 0.0, TransferStatus::Transferring);
+
+        // An empty file has no chunks: send one empty chunk so the receiver creates it.
+        if file_size == 0 {
+            match post_chunk(&client, &base, &t_id, 0, Vec::new()).await {
+                Ok(()) => mgr.update_progress(&t_id, 0, 0.0, TransferStatus::Completed),
+                Err(e) => mgr.mark_failed(&t_id, &e),
+            }
+            return;
+        }
+
+        let mut buffer = vec![0u8; UPLOAD_CHUNK_SIZE];
+        let mut offset: u64 = 0;
+        let start_time = Instant::now();
 
         loop {
             if cancel_flag.load(Ordering::SeqCst) {
                 let _ = client
-                    .post(format!("https://{}:{}/api/files/cancel/{}", peer.ip, peer.port, t_id))
+                    .post(format!("{}/api/files/cancel/{}", base, t_id))
                     .send()
                     .await;
-                mgr_clone.update_progress(&t_id, offset, 0.0, TransferStatus::Cancelled);
-                break;
+                mgr.update_progress(&t_id, offset, 0.0, TransferStatus::Cancelled);
+                return;
             }
 
             let bytes_read = match file.read(&mut buffer) {
                 Ok(0) => break, // EOF
                 Ok(n) => n,
                 Err(e) => {
-                    mgr_clone.update_progress(&t_id, offset, 0.0, TransferStatus::Failed(e.to_string()));
+                    mgr.mark_failed(&t_id, &format!("Read error: {}", e));
                     return;
                 }
             };
 
-            let chunk_data = buffer[..bytes_read].to_vec();
-            let url = format!(
-                "https://{}:{}/api/files/chunk/{}?offset={}",
-                peer.ip, peer.port, t_id, offset
-            );
-
-            let res = client
-                .post(&url)
-                .body(chunk_data)
-                .send()
-                .await;
-
-            match res {
-                Ok(r) if r.status().is_success() => {
-                    offset += bytes_read as u64;
-                    let elapsed = start_time.elapsed().as_secs_f64();
-                    let speed = if elapsed > 0.1 {
-                        (offset as f64 / 1_048_576.0) / elapsed
-                    } else {
-                        0.0
-                    };
-
-                    let is_done = offset >= transfer.file_size;
-                    let status = if is_done {
-                        TransferStatus::Completed
-                    } else {
-                        TransferStatus::Transferring
-                    };
-
-                    mgr_clone.update_progress(&t_id, offset, speed, status);
-                }
-                _ => {
-                    mgr_clone.update_progress(
-                        &t_id,
-                        offset,
-                        0.0,
-                        TransferStatus::Failed("Failed to send chunk".to_string()),
-                    );
-                    return;
+            let chunk = buffer[..bytes_read].to_vec();
+            let mut attempt: u32 = 0;
+            loop {
+                match post_chunk(&client, &base, &t_id, offset, chunk.clone()).await {
+                    Ok(()) => break,
+                    Err(e) => {
+                        attempt += 1;
+                        if attempt >= UPLOAD_CHUNK_RETRIES || cancel_flag.load(Ordering::SeqCst) {
+                            mgr.mark_failed(&t_id, &e);
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
+                    }
                 }
             }
+
+            offset += bytes_read as u64;
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let speed = if elapsed > 0.1 {
+                (offset as f64 / 1_048_576.0) / elapsed
+            } else {
+                0.0
+            };
+            let status = if offset >= file_size {
+                TransferStatus::Completed
+            } else {
+                TransferStatus::Transferring
+            };
+            mgr.update_progress(&t_id, offset, speed, status);
+        }
+
+        if offset < file_size {
+            mgr.mark_failed(&t_id, "File changed while sending");
         }
     });
 
@@ -499,19 +655,20 @@ pub async fn start_file_upload(
 #[tauri::command]
 pub async fn cancel_file_transfer(
     transfer_mgr: State<'_, Arc<TransferManager>>,
-    discovery_mgr: State<'_, Arc<DiscoveryManager>>,
     transfer_id: String,
 ) -> Result<(), String> {
     if let Some(t) = transfer_mgr.get_transfer(&transfer_id) {
-        let peers = discovery_mgr.get_peers();
-        if let Some(peer) = peers.iter().find(|p| p.device_id == t.peer_id) {
-            let client = reqwest::Client::builder()
+        if !t.peer_ip.is_empty() && t.peer_port != 0 {
+            if let Ok(c) = reqwest::Client::builder()
                 .danger_accept_invalid_certs(true)
+                .timeout(Duration::from_secs(3))
                 .build()
-                .ok();
-            if let Some(c) = client {
+            {
                 let _ = c
-                    .post(format!("https://{}:{}/api/files/cancel/{}", peer.ip, peer.port, transfer_id))
+                    .post(format!(
+                        "https://{}:{}/api/files/cancel/{}",
+                        t.peer_ip, t.peer_port, transfer_id
+                    ))
                     .send()
                     .await;
             }
@@ -608,4 +765,87 @@ pub fn get_chat_timeline(
 ) -> Result<Vec<crate::db::TimelineItem>, String> {
     let lim = limit.unwrap_or(200);
     db.get_timeline(&peer_id, lim).map_err(|e| e.to_string())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_strips_paths() {
+        assert_eq!(sanitize_file_name("..\\..\\Windows\\evil.exe"), "evil.exe");
+        assert_eq!(sanitize_file_name("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_file_name("C:\\x\\photo.png"), "photo.png");
+    }
+
+    #[test]
+    fn sanitize_handles_bad_names() {
+        assert_eq!(sanitize_file_name(""), "file");
+        assert_eq!(sanitize_file_name("..."), "file");
+        assert_eq!(sanitize_file_name("a<b>c?.txt"), "abc.txt");
+        assert_eq!(sanitize_file_name("CON.txt"), "_CON.txt");
+        assert_eq!(sanitize_file_name("com1"), "_com1");
+        assert_eq!(sanitize_file_name("report final.pdf"), "report final.pdf");
+    }
+
+    fn mgr() -> TransferManager {
+        TransferManager::new(None, None)
+    }
+
+    fn incoming(status: TransferStatus, path: &str, size: u64) -> FileTransferInfo {
+        FileTransferInfo {
+            transfer_id: "t1".into(),
+            peer_id: "p".into(),
+            sender_id: "p".into(),
+            sender_name: "Sender".into(),
+            receiver_id: "me".into(),
+            receiver_name: "Me".into(),
+            file_name: "f.bin".into(),
+            file_size: size,
+            transferred_bytes: 0,
+            speed_mbps: 0.0,
+            status,
+            is_incoming: true,
+            file_path: Some(path.into()),
+            peer_ip: "127.0.0.1".into(),
+            peer_port: 1,
+        }
+    }
+
+    #[test]
+    fn chunks_rejected_until_accepted() {
+        let m = mgr();
+        let mut path = std::env::temp_dir();
+        path.push(format!("xent_test_{}.bin", Uuid::new_v4()));
+        let p = path.to_string_lossy().to_string();
+        m.add_transfer(incoming(TransferStatus::Pending, &p, 4));
+        assert!(m.write_incoming_chunk("t1", 0, b"abcd").is_err());
+        assert!(!path.exists());
+        m.handle_response("t1", true);
+        let t = m.write_incoming_chunk("t1", 0, b"abcd").unwrap();
+        assert_eq!(t.status, TransferStatus::Completed);
+        assert_eq!(std::fs::read(&path).unwrap(), b"abcd");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn empty_file_completes() {
+        let m = mgr();
+        let mut path = std::env::temp_dir();
+        path.push(format!("xent_test_{}.bin", Uuid::new_v4()));
+        let p = path.to_string_lossy().to_string();
+        m.add_transfer(incoming(TransferStatus::Accepted, &p, 0));
+        let t = m.write_incoming_chunk("t1", 0, b"").unwrap();
+        assert_eq!(t.status, TransferStatus::Completed);
+        assert!(path.exists());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn upload_starts_only_once() {
+        let m = mgr();
+        assert!(m.try_begin_upload("x"));
+        assert!(!m.try_begin_upload("x"));
+    }
 }

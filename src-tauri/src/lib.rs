@@ -133,6 +133,53 @@ fn toggle_trusted_device(
 }
 
 #[tauri::command]
+fn set_device_nickname(
+    state: State<'_, Arc<SettingsState>>,
+    device_id: String,
+    nickname: String,
+) -> Result<AppSettings, String> {
+    state.set_device_nickname(device_id, nickname)
+}
+
+#[tauri::command]
+fn toggle_favorite_device(
+    state: State<'_, Arc<SettingsState>>,
+    device_id: String,
+) -> Result<AppSettings, String> {
+    state.toggle_favorite(device_id)
+}
+
+#[tauri::command]
+fn toggle_blocked_device(
+    state: State<'_, Arc<SettingsState>>,
+    device_id: String,
+) -> Result<AppSettings, String> {
+    state.toggle_blocked(device_id)
+}
+
+#[tauri::command]
+fn clear_chat_history(db: State<'_, Arc<Database>>, peer_id: String) -> Result<(), String> {
+    db.clear_thread(&peer_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_downloads_folder(state: State<'_, Arc<SettingsState>>) -> Result<(), String> {
+    let dir = state.get_settings().download_dir;
+    let _ = std::fs::create_dir_all(&dir);
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let program = "xdg-open";
+    std::process::Command::new(program)
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn open_log_folder() -> Result<(), String> {
     let dir = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -311,6 +358,11 @@ pub fn run() {
             update_download_dir,
             set_auto_accept,
             toggle_trusted_device,
+            set_device_nickname,
+            toggle_favorite_device,
+            toggle_blocked_device,
+            clear_chat_history,
+            open_downloads_folder,
             open_log_folder,
             chat::send_chat_message,
             chat::get_chat_history,

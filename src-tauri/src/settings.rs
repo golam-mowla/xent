@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -40,8 +41,20 @@ pub struct AppSettings {
     pub manual_peers: Vec<String>,
     #[serde(default)]
     pub auto_accept: bool,
+    /// Legacy list kept so old settings files keep working.
+    /// Devices here are treated exactly like favourites.
     #[serde(default)]
     pub trusted_devices: Vec<String>,
+    /// Favourite devices: pinned on top, files from them are accepted
+    /// automatically (no permission prompt).
+    #[serde(default)]
+    pub favorite_devices: Vec<String>,
+    /// Local-only names for other devices (device_id -> nickname).
+    #[serde(default)]
+    pub device_nicknames: HashMap<String, String>,
+    /// Blocked devices: their messages and file offers are silently dropped.
+    #[serde(default)]
+    pub blocked_devices: Vec<String>,
 }
 
 pub struct SettingsState {
@@ -118,7 +131,71 @@ impl SettingsState {
             manual_peers: Vec::new(),
             auto_accept: false,
             trusted_devices: Vec::new(),
+            favorite_devices: Vec::new(),
+            device_nicknames: HashMap::new(),
+            blocked_devices: Vec::new(),
         }
+    }
+
+    pub fn is_favorite(&self, device_id: &str) -> bool {
+        let lock = self.settings.lock().unwrap();
+        lock.favorite_devices.iter().any(|d| d == device_id)
+            || lock.trusted_devices.iter().any(|d| d == device_id)
+    }
+
+    pub fn is_blocked(&self, device_id: &str) -> bool {
+        self.settings
+            .lock()
+            .unwrap()
+            .blocked_devices
+            .iter()
+            .any(|d| d == device_id)
+    }
+
+    pub fn toggle_favorite(&self, device_id: String) -> Result<AppSettings, String> {
+        let mut lock = self.settings.lock().unwrap();
+        let was_fav = lock.favorite_devices.contains(&device_id)
+            || lock.trusted_devices.contains(&device_id);
+        if was_fav {
+            lock.favorite_devices.retain(|id| id != &device_id);
+            lock.trusted_devices.retain(|id| id != &device_id);
+        } else {
+            lock.blocked_devices.retain(|id| id != &device_id);
+            lock.favorite_devices.push(device_id);
+        }
+        Self::save_to_disk(&self.config_path, &lock)?;
+        Ok(lock.clone())
+    }
+
+    pub fn toggle_blocked(&self, device_id: String) -> Result<AppSettings, String> {
+        let mut lock = self.settings.lock().unwrap();
+        if lock.blocked_devices.contains(&device_id) {
+            lock.blocked_devices.retain(|id| id != &device_id);
+        } else {
+            // A blocked device can never stay a favourite.
+            lock.favorite_devices.retain(|id| id != &device_id);
+            lock.trusted_devices.retain(|id| id != &device_id);
+            lock.blocked_devices.push(device_id);
+        }
+        Self::save_to_disk(&self.config_path, &lock)?;
+        Ok(lock.clone())
+    }
+
+    /// Empty nickname removes the custom name.
+    pub fn set_device_nickname(
+        &self,
+        device_id: String,
+        nickname: String,
+    ) -> Result<AppSettings, String> {
+        let cleaned: String = nickname.trim().chars().take(32).collect();
+        let mut lock = self.settings.lock().unwrap();
+        if cleaned.is_empty() {
+            lock.device_nicknames.remove(&device_id);
+        } else {
+            lock.device_nicknames.insert(device_id, cleaned);
+        }
+        Self::save_to_disk(&self.config_path, &lock)?;
+        Ok(lock.clone())
     }
 
     pub fn add_manual_peer(&self, peer_addr: String) -> Result<AppSettings, String> {
@@ -239,5 +316,53 @@ mod tests {
         assert_eq!(settings.manual_peers.len(), 0);
         assert!(!settings.auto_accept);
         assert_eq!(settings.trusted_devices.len(), 0);
+        assert_eq!(settings.favorite_devices.len(), 0);
+        assert_eq!(settings.device_nicknames.len(), 0);
+        assert_eq!(settings.blocked_devices.len(), 0);
+    }
+
+    fn temp_state(tag: &str) -> SettingsState {
+        let mut path = std::env::temp_dir();
+        path.push(format!("xent_test_settings_{}_{}.json", tag, Uuid::new_v4()));
+        let settings = SettingsState::create_default_settings(53317, ".", "test");
+        SettingsState {
+            settings: Mutex::new(settings),
+            config_path: path,
+        }
+    }
+
+    #[test]
+    fn favorite_toggle_and_legacy_trusted() {
+        let st = temp_state("fav");
+        assert!(!st.is_favorite("a"));
+        st.toggle_favorite("a".into()).unwrap();
+        assert!(st.is_favorite("a"));
+        st.toggle_favorite("a".into()).unwrap();
+        assert!(!st.is_favorite("a"));
+
+        st.toggle_trusted_device("b".into()).unwrap();
+        assert!(st.is_favorite("b"), "legacy trusted devices count as favourites");
+        st.toggle_favorite("b".into()).unwrap();
+        assert!(!st.is_favorite("b"));
+    }
+
+    #[test]
+    fn blocking_removes_favorite() {
+        let st = temp_state("block");
+        st.toggle_favorite("a".into()).unwrap();
+        st.toggle_blocked("a".into()).unwrap();
+        assert!(st.is_blocked("a"));
+        assert!(!st.is_favorite("a"));
+        st.toggle_blocked("a".into()).unwrap();
+        assert!(!st.is_blocked("a"));
+    }
+
+    #[test]
+    fn nickname_set_trim_and_clear() {
+        let st = temp_state("nick");
+        let s = st.set_device_nickname("a".into(), "  My Laptop  ".into()).unwrap();
+        assert_eq!(s.device_nicknames.get("a").unwrap(), "My Laptop");
+        let s = st.set_device_nickname("a".into(), "   ".into()).unwrap();
+        assert!(s.device_nicknames.get("a").is_none());
     }
 }

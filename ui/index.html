@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Xent</title>
+<link rel="icon" type="image/png" href="./app-icon.png">
 <link rel="stylesheet" href="./tabler-icons.min.css">
 <style>
 :root{
@@ -52,6 +53,10 @@ p{margin:0}
   .g{backdrop-filter:none;-webkit-backdrop-filter:none;background:var(--glass2)}
 }
 .rail{display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 0}
+.rail-logo{width:36px;height:36px;margin:0 0 6px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:transform 150ms ease}
+.rail-logo:hover{transform:scale(1.08)}
+.spin{animation:spin 1s linear infinite}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .rb{
   width:40px;height:40px;border-radius:12px;border:0;background:transparent;
   color:var(--tx2);display:flex;align-items:center;justify-content:center;
@@ -218,12 +223,18 @@ p{margin:0}
 <main class="shell">
   <!-- Left Rail Navigation -->
   <nav class="g rail" aria-label="Main navigation">
+    <div class="rail-logo" id="rail-logo-btn" title="About Xent">
+      <img src="./app-icon.png" width="30" height="30" style="border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.2);display:block" alt="Xent">
+    </div>
     <button class="rb on" id="tab-chat" aria-label="Chat" title="Chat"><i class="ti ti-message-circle" style="font-size:20px"></i></button>
     <button class="rb" id="tab-nearby" aria-label="Nearby" title="Nearby Devices"><i class="ti ti-radar-2" style="font-size:20px"></i></button>
     <button class="rb" id="tab-files" aria-label="Files" title="Transfer History"><i class="ti ti-folder" style="font-size:20px"></i></button>
     <span class="sp"></span>
     <button class="rb" id="theme" aria-label="Toggle theme" title="Toggle Light/Dark"><i class="ti ti-moon" id="theme-icon" style="font-size:20px"></i></button>
-    <button class="rb" id="btn-settings" aria-label="Settings" title="Settings"><i class="ti ti-adjustments-horizontal" style="font-size:20px"></i></button>
+    <button class="rb" id="btn-settings" aria-label="Settings" title="Settings" style="position:relative">
+      <i class="ti ti-adjustments-horizontal" style="font-size:20px"></i>
+      <span id="settings-update-badge" style="display:none;position:absolute;top:7px;right:7px;width:7px;height:7px;background:#e24b4a;border-radius:50%;box-shadow:0 0 6px #e24b4a"></span>
+    </button>
   </nav>
 
   <!-- Left List Panel -->
@@ -451,11 +462,57 @@ p{margin:0}
 
     <!-- Tab 4: About -->
     <div class="tab-pane" id="tab-about">
-      <div style="text-align:center;padding:12px 0">
-        <i class="ti ti-brand-telegram" style="font-size:38px;color:var(--ac)"></i>
-        <p class="t" style="font-size:16px;margin-top:6px">Xent v0.2.0</p>
-        <p class="s" style="margin-top:4px">Fast, lightweight LAN messenger and file sharing.</p>
+      <div style="text-align:center;padding:8px 0 4px">
+        <img src="./app-icon.png" width="60" height="60" style="border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,0.18);display:inline-block" alt="Xent">
+        <p class="t" style="font-size:16px;font-weight:700;margin-top:8px">Xent <span id="about-version" style="font-size:12px;font-weight:600;color:var(--tx2);padding:2px 6px;border-radius:6px;background:var(--in);margin-left:4px">v0.2.3</span></p>
+        <p class="s" style="margin-top:4px">Fast, lightweight LAN messenger & file sharing.</p>
       </div>
+
+      <!-- Update Card -->
+      <div style="background:var(--in);border-radius:12px;padding:12px;margin:10px 0;border:1px solid var(--line)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <span class="s" style="font-weight:600;color:var(--tx);display:flex;align-items:center;gap:6px">
+            <i class="ti ti-refresh" style="font-size:16px;color:var(--ac)"></i>Software Update
+          </span>
+          <button class="btn ghost" id="btn-check-update" style="padding:4px 10px;font-size:12px;height:auto">
+            <i class="ti ti-rotate" id="check-update-icon"></i><span id="check-update-btn-text">Check for updates</span>
+          </button>
+        </div>
+
+        <div id="update-status-box" style="font-size:12px;color:var(--tx2);line-height:1.4">
+          Click "Check for updates" to search for new releases on GitHub.
+        </div>
+
+        <!-- Update Action Area (Hidden by default) -->
+        <div id="update-action-area" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+          <div id="update-details" style="margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span class="badge" style="background:var(--ok);color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px">NEW</span>
+              <strong id="update-new-version" style="color:var(--tx);font-size:13px"></strong>
+              <span id="update-new-date" style="font-size:11px;color:var(--tx2)"></span>
+            </div>
+            <p id="update-new-notes" style="margin-top:6px;font-size:11px;color:var(--tx2);max-height:80px;overflow-y:auto;white-space:pre-wrap;background:rgba(0,0,0,0.06);padding:6px 8px;border-radius:6px;font-family:inherit"></p>
+          </div>
+
+          <!-- Progress Bar -->
+          <div id="update-progress-container" style="display:none;margin:8px 0">
+            <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px">
+              <span id="update-progress-label">Downloading update...</span>
+              <span id="update-progress-percent">0%</span>
+            </div>
+            <div style="width:100%;height:6px;background:var(--sel);border-radius:3px;overflow:hidden">
+              <div id="update-progress-bar" style="width:0%;height:100%;background:linear-gradient(90deg,var(--ac),#D4537E);border-radius:3px;transition:width 150ms ease"></div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button class="btn ok" id="btn-download-update" style="flex:1"><i class="ti ti-download"></i>Update Now</button>
+            <button class="btn ok" id="btn-install-update" style="flex:1;display:none;background:var(--ok)"><i class="ti ti-device-floppy"></i>Restart & Install</button>
+            <button class="btn ghost" id="btn-view-github" title="View release on GitHub"><i class="ti ti-external-link"></i>GitHub</button>
+          </div>
+        </div>
+      </div>
+
       <button class="btn ghost" id="btn-open-logs" style="width:100%"><i class="ti ti-folder"></i>Open Logs Directory</button>
     </div>
   </div>
@@ -1689,6 +1746,191 @@ if (btnOpenLogs) {
     }
   });
 }
+
+// --- Software Update Logic ---
+var btnCheckUpdate = document.getElementById('btn-check-update');
+var checkUpdateIcon = document.getElementById('check-update-icon');
+var checkUpdateBtnText = document.getElementById('check-update-btn-text');
+var updateStatusBox = document.getElementById('update-status-box');
+var updateActionArea = document.getElementById('update-action-area');
+var updateNewVersion = document.getElementById('update-new-version');
+var updateNewDate = document.getElementById('update-new-date');
+var updateNewNotes = document.getElementById('update-new-notes');
+var updateProgressContainer = document.getElementById('update-progress-container');
+var updateProgressLabel = document.getElementById('update-progress-label');
+var updateProgressPercent = document.getElementById('update-progress-percent');
+var updateProgressBar = document.getElementById('update-progress-bar');
+var btnDownloadUpdate = document.getElementById('btn-download-update');
+var btnInstallUpdate = document.getElementById('btn-install-update');
+var btnViewGithub = document.getElementById('btn-view-github');
+var settingsUpdateBadge = document.getElementById('settings-update-badge');
+var railLogoBtn = document.getElementById('rail-logo-btn');
+var aboutVersion = document.getElementById('about-version');
+
+var activeUpdateInfo = null;
+
+function performUpdateCheck(manual) {
+  if (!window.__TAURI__ || !window.__TAURI__.core) return;
+  if (manual) {
+    if (checkUpdateIcon) checkUpdateIcon.classList.add('spin');
+    if (checkUpdateBtnText) checkUpdateBtnText.textContent = 'Checking...';
+    if (updateStatusBox) updateStatusBox.innerHTML = '<span style="display:flex;align-items:center;gap:6px"><i class="ti ti-loader spin"></i> Checking GitHub for releases...</span>';
+  }
+
+  window.__TAURI__.core.invoke('check_for_updates').then(function(info) {
+    if (checkUpdateIcon) checkUpdateIcon.classList.remove('spin');
+    if (checkUpdateBtnText) checkUpdateBtnText.textContent = 'Check for updates';
+    if (aboutVersion && info.current_version) aboutVersion.textContent = 'v' + info.current_version;
+
+    if (info.has_update) {
+      activeUpdateInfo = info;
+      if (settingsUpdateBadge) settingsUpdateBadge.style.display = 'block';
+      if (updateStatusBox) updateStatusBox.innerHTML = '<span style="color:var(--ok);font-weight:600">Update available!</span> Latest release: <strong>v' + escapeHtml(info.latest_version) + '</strong>';
+      if (updateActionArea) updateActionArea.style.display = 'block';
+      if (updateNewVersion) updateNewVersion.textContent = 'v' + info.latest_version;
+      if (updateNewDate && info.published_at) {
+        try {
+          var d = new Date(info.published_at);
+          updateNewDate.textContent = 'Released ' + d.toLocaleDateString();
+        } catch(_) {
+          updateNewDate.textContent = '';
+        }
+      }
+      if (updateNewNotes) {
+        updateNewNotes.textContent = info.release_notes || 'New release available.';
+      }
+      if (btnDownloadUpdate) {
+        btnDownloadUpdate.style.display = 'flex';
+        btnDownloadUpdate.disabled = !info.download_url;
+        btnDownloadUpdate.innerHTML = info.download_url 
+          ? '<i class="ti ti-download"></i>Update to v' + escapeHtml(info.latest_version)
+          : '<i class="ti ti-external-link"></i>View on GitHub';
+      }
+      if (btnInstallUpdate) btnInstallUpdate.style.display = 'none';
+
+      if (!manual) {
+        showToast('Update available: v' + info.latest_version + '. Check Settings > About.');
+      }
+    } else {
+      activeUpdateInfo = null;
+      if (settingsUpdateBadge) settingsUpdateBadge.style.display = 'none';
+      if (updateActionArea) updateActionArea.style.display = 'none';
+      if (updateStatusBox) updateStatusBox.innerHTML = '<span style="color:var(--ok);display:flex;align-items:center;gap:6px"><i class="ti ti-check" style="font-size:16px"></i> You are on the latest version (v' + escapeHtml(info.current_version) + ').</span>';
+      if (manual) {
+        showToast('You are on the latest version!');
+      }
+    }
+  }).catch(function(err) {
+    if (checkUpdateIcon) checkUpdateIcon.classList.remove('spin');
+    if (checkUpdateBtnText) checkUpdateBtnText.textContent = 'Check for updates';
+    if (updateStatusBox && manual) {
+      updateStatusBox.innerHTML = '<span style="color:var(--busy)">Could not check updates: ' + escapeHtml(String(err)) + '</span>';
+    }
+  });
+}
+
+if (btnCheckUpdate) {
+  btnCheckUpdate.addEventListener('click', function() {
+    performUpdateCheck(true);
+  });
+}
+
+if (btnDownloadUpdate) {
+  btnDownloadUpdate.addEventListener('click', function() {
+    if (!activeUpdateInfo) return;
+    if (!activeUpdateInfo.download_url) {
+      if (window.__TAURI__ && window.__TAURI__.core && activeUpdateInfo.release_url) {
+        window.__TAURI__.core.invoke('open_release_page', { url: activeUpdateInfo.release_url });
+      }
+      return;
+    }
+    btnDownloadUpdate.disabled = true;
+    if (updateProgressContainer) updateProgressContainer.style.display = 'block';
+    if (updateProgressBar) updateProgressBar.style.width = '0%';
+    if (updateProgressPercent) updateProgressPercent.textContent = '0%';
+    if (updateProgressLabel) updateProgressLabel.textContent = 'Downloading installer...';
+
+    window.__TAURI__.core.invoke('start_update_download', {
+      downloadUrl: activeUpdateInfo.download_url,
+      expectedSize: activeUpdateInfo.asset_size || null
+    }).catch(function(err) {
+      btnDownloadUpdate.disabled = false;
+      if (updateProgressLabel) updateProgressLabel.textContent = 'Download failed: ' + err;
+      showToast('Download error: ' + err);
+    });
+  });
+}
+
+if (btnInstallUpdate) {
+  btnInstallUpdate.addEventListener('click', function() {
+    btnInstallUpdate.disabled = true;
+    btnInstallUpdate.innerHTML = '<i class="ti ti-loader spin"></i>Launching installer...';
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('install_update').catch(function(err) {
+        btnInstallUpdate.disabled = false;
+        btnInstallUpdate.innerHTML = '<i class="ti ti-device-floppy"></i>Restart & Install';
+        showToast('Install error: ' + err);
+      });
+    }
+  });
+}
+
+if (btnViewGithub) {
+  btnViewGithub.addEventListener('click', function() {
+    var url = (activeUpdateInfo && activeUpdateInfo.release_url) 
+      ? activeUpdateInfo.release_url 
+      : 'https://github.com/golam-mowla/xent/releases';
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('open_release_page', { url: url }).catch(console.error);
+    }
+  });
+}
+
+if (railLogoBtn) {
+  railLogoBtn.addEventListener('click', function() {
+    if (settingsModal) {
+      settingsNavTabs.forEach(function(t) { t.classList.remove('active'); });
+      settingsPanes.forEach(function(p) { p.classList.remove('active'); });
+      var aboutTab = document.querySelector('.nav-tab[data-tab="tab-about"]');
+      var aboutPane = document.getElementById('tab-about');
+      if (aboutTab) aboutTab.classList.add('active');
+      if (aboutPane) aboutPane.classList.add('active');
+      settingsModal.classList.add('show');
+    }
+  });
+}
+
+// Listen to update download progress events from Rust
+if (window.__TAURI__ && window.__TAURI__.event) {
+  window.__TAURI__.event.listen('update://progress', function(ev) {
+    var p = ev.payload;
+    if (!p) return;
+    if (updateProgressContainer) updateProgressContainer.style.display = 'block';
+    if (updateProgressBar) updateProgressBar.style.width = Math.min(100, Math.max(0, p.percent)) + '%';
+    if (updateProgressPercent) updateProgressPercent.textContent = Math.round(p.percent) + '%';
+    
+    if (p.status === 'downloading') {
+      var mb = (p.downloaded_bytes / 1048576).toFixed(1);
+      var tot = p.total_bytes ? (p.total_bytes / 1048576).toFixed(1) + ' MB' : '';
+      if (updateProgressLabel) updateProgressLabel.textContent = 'Downloading: ' + mb + (tot ? ' / ' + tot : ' MB');
+    } else if (p.status === 'completed') {
+      if (updateProgressLabel) updateProgressLabel.textContent = 'Download complete!';
+      if (btnDownloadUpdate) btnDownloadUpdate.style.display = 'none';
+      if (btnInstallUpdate) {
+        btnInstallUpdate.style.display = 'flex';
+        btnInstallUpdate.disabled = false;
+      }
+      showToast('Update downloaded! Click Restart & Install to apply.');
+    } else if (p.status === 'error') {
+      if (updateProgressLabel) updateProgressLabel.textContent = 'Error: ' + (p.error || 'Failed');
+      if (btnDownloadUpdate) btnDownloadUpdate.disabled = false;
+    }
+  });
+}
+
+setTimeout(function() {
+  performUpdateCheck(false);
+}, 3500);
 
 // Add by IP Modal
 if (btnAddIpHeader) {

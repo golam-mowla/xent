@@ -36,6 +36,8 @@
 - **Streaming Chunked File Sharing**: Send files of any size via chunked streaming with real-time progress bars, MB/s transfer speed, and remaining time estimates.
 - **Receiver Accept / Decline Flow**: Prevents unauthorized file downloads by requiring explicit confirmation from the recipient before transfer begins.
 - **Cancellation Support**: Sender or receiver can cancel file transfers in-flight with instant resource cleanup.
+- **Custom 3D Origami Neon App Icon**: Custom-branded 3D origami "X" paper airplane icon bundled across all platforms (Windows `.ico`, macOS `.icns`, Linux PNGs, web favicon, and UI rail).
+- **In-App GitHub Release Updater**: One-click update check and automatic background release discovery querying GitHub Releases API. Features release notes preview, real-time chunked download progress bar (MB / total MB, percentage), and seamless "Restart & Install" execution.
 - **System Tray Integration**: Background minimization to the system tray with a right-click menu and quick left-click toggle.
 
 ---
@@ -102,7 +104,7 @@ Build the NSIS Windows installer locally:
 npx @tauri-apps/cli build
 ```
 The output installer will be located at:
-`src-tauri/target/release/bundle/nsis/Xent_0.2.2_x64-setup.exe`.
+`src-tauri/target/release/bundle/nsis/Xent_0.2.3_x64-setup.exe`.
 
 ---
 

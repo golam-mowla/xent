@@ -308,3 +308,34 @@
   - `upload_starts_only_once`, `chunks_rejected_until_accepted`, `empty_file_completes`
   - `nickname_set_trim_and_clear`, `blocking_removes_favorite`, `favorite_toggle_and_legacy_trusted`
   - All 11 unit tests pass in 0.04s.
+
+---
+
+## Phase 14: Custom 3D Origami App Icon & In-App GitHub Releases Updater (Completed)
+
+### What Works
+- **Custom 3D Origami Neon App Icon**:
+  - Replaced default Tauri icons with custom 3D geometric origami "X" paper airplane in neon blue/cyan and magenta/purple gradient.
+  - Automatically generated all required multi-platform icon assets using `@tauri-apps/cli`:
+    - `icon.ico` (multi-resolution Windows executable and taskbar icon).
+    - `icon.icns` (macOS bundle icon).
+    - PNG sizes: `32x32.png`, `64x64.png`, `128x128.png`, `128x128@2x.png`, `icon.png`, and all StoreLogo/Square assets.
+    - Web favicon (`ui/favicon.png`) and in-app asset (`ui/app-icon.png`).
+  - Added clickable brand logo button (`#rail-logo-btn`) at the top of the left rail navigation.
+- **In-App GitHub Releases Updater**:
+  - Added `src-tauri/src/updater.rs` with asynchronous update checking against the public GitHub Releases API (`https://api.github.com/repos/golam-mowla/xent/releases/latest`).
+  - Built-in semver comparison logic (`is_newer_version`) reliably parsing versions with or without `v` prefixes and pre-release tags.
+  - **Download & Progress Streaming**: Downloads the release installer (`Xent_<version>_x64-setup.exe`) to the system temporary directory with real-time `update://progress` Tauri events (reporting downloaded bytes, total bytes, percentage, and transfer status).
+  - **One-Click Installation**: Seamless "Restart & Install" execution launching the NSIS installer and gracefully terminating the running application so files can be updated.
+  - **Settings > About UI Integration**:
+    - Displays high-resolution branded app icon and active version pill.
+    - Dedicated "Software Update" card with manual "Check for updates" button and animated loading indicator.
+    - Release details preview showing the new version badge, release date, and scrollable release notes.
+    - Live progress bar showing real-time download progress (MB downloaded / total MB, percentage).
+    - Direct "View on GitHub" fallback button to open the release webpage in the system default browser.
+  - **Silent Background Notification**:
+    - Silently checks for updates in the background 3.5 seconds after app startup.
+    - If a newer version is available, illuminates an indicator dot badge on the Settings rail button and displays an informative toast notification.
+- **Automated Unit Tests (12/12 passing)**:
+  - Added unit test `updater::tests::test_is_newer_version` verifying semver comparison across edge cases (`0.2.3 > 0.2.2`, `1.0.0 > 0.2.2`, `v0.2.3 > v0.2.2`, equal and older versions).
+  - All 12 unit tests pass in 0.05s.

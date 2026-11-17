@@ -5,6 +5,7 @@ pub mod discovery;
 pub mod server;
 pub mod settings;
 pub mod transfer;
+pub mod updater;
 
 use cert::TlsCertificate;
 use db::Database;
@@ -383,7 +384,11 @@ pub fn run() {
             transfer::respond_file_transfer,
             transfer::start_file_upload,
             transfer::cancel_file_transfer,
-            transfer::get_transfer_history
+            transfer::get_transfer_history,
+            updater::check_for_updates,
+            updater::start_update_download,
+            updater::install_update,
+            updater::open_release_page
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

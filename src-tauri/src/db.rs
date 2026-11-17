@@ -367,6 +367,13 @@ impl Database {
         Ok(())
     }
 
+    /// Delete all transfer history records.
+    pub fn clear_all_transfers(&self) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM transfers", [])?;
+        Ok(())
+    }
+
     pub fn get_timeline(&self, peer_id: &str, limit: usize) -> Result<Vec<TimelineItem>, rusqlite::Error> {
         let messages = self.get_messages(peer_id, limit)?;
         

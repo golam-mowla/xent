@@ -22,6 +22,13 @@
 
 ## 🎯 Features
 
+- **ChatGPT-Inspired Minimalist Desktop UI**: Replaced heavy glassmorphism with a clean, typography-focused design inspired by ChatGPT's desktop interface (neutral `#FFFFFF`/`#212121` palettes, subtle 1px borders, Inter typography, 240px responsive left sidebar).
+- **Four Dedicated Workspaces**:
+  - **Messages**: ChatGPT-style centered conversation layout (`max-width: 800px`), date separators, hover action bar (Reply, React, Copy, Edit, Delete), inline file transfer cards, and fixed bottom composer with auto-growing textarea.
+  - **Nearby Devices**: Replaces bulky cards with a clean list showing device type icons, OS badges, connection quality, online status, favorites, and quick actions ("Message", "Send Files").
+  - **Send Files**: Dedicated file-sharing workspace with drag-and-drop zone, file and folder picker (`pick_folder_to_send`), staged files management, recipient picker, and batch transfer execution.
+  - **Transfers**: Professional transfer manager with tabs (All, Incoming, Outgoing), filters (Active, Completed, Failed/Cancelled), live progress bars, speed and ETA readouts, and SQLite transfer history clearing.
+- **Custom Context Menu**: Right-click context menus across messages, nearby peers, and transfer rows.
 - **Teams-Style Presence & Dynamic Status**: Rich status indicators (*Available*, *Busy*, *Be right back*, *Appear offline*) with custom status messages (up to 80 characters) and configurable auto-clearing expiration (*Never*, *1 hour*, *4 hours*, *Today*).
 - **Instant Presence Broadcasting**: Dynamic UDP multicast announcements propagate presence changes in ~1 second across the local network without restarting.
 - **Appear Offline Mode**: Emits a multicast `bye` packet and suppresses broadcasts while keeping local server and chat capabilities intact.

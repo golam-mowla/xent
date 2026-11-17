@@ -702,6 +702,55 @@ pub async fn pick_files_to_send() -> Result<Vec<String>, String> {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelectedFileMeta {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+}
+
+#[tauri::command]
+pub async fn pick_folder_to_send() -> Result<Vec<String>, String> {
+    let folder = rfd::AsyncFileDialog::new().pick_folder().await;
+    let mut files = Vec::new();
+    if let Some(h) = folder {
+        let root = h.path();
+        if root.is_dir() {
+            fn collect_files(dir: &std::path::Path, acc: &mut Vec<String>) {
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            acc.push(path.to_string_lossy().to_string());
+                        } else if path.is_dir() {
+                            collect_files(&path, acc);
+                        }
+                    }
+                }
+            }
+            collect_files(root, &mut files);
+        }
+    }
+    Ok(files)
+}
+
+#[tauri::command]
+pub fn get_files_metadata(paths: Vec<String>) -> Vec<SelectedFileMeta> {
+    paths
+        .into_iter()
+        .filter_map(|p| {
+            let pb = std::path::PathBuf::from(&p);
+            if pb.is_file() {
+                let size = std::fs::metadata(&pb).map(|m| m.len()).unwrap_or(0);
+                let name = pb.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
+                Some(SelectedFileMeta { path: p, name, size })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub async fn pick_download_dir(
     settings_state: State<'_, Arc<SettingsState>>,

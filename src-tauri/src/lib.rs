@@ -164,6 +164,11 @@ fn clear_chat_history(db: State<'_, Arc<Database>>, peer_id: String) -> Result<(
 }
 
 #[tauri::command]
+fn clear_all_transfers(db: State<'_, Arc<Database>>) -> Result<(), String> {
+    db.clear_all_transfers().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn open_downloads_folder(state: State<'_, Arc<SettingsState>>) -> Result<(), String> {
     let dir = state.get_settings().download_dir;
     let _ = std::fs::create_dir_all(&dir);
@@ -363,6 +368,7 @@ pub fn run() {
             toggle_favorite_device,
             toggle_blocked_device,
             clear_chat_history,
+            clear_all_transfers,
             open_downloads_folder,
             open_log_folder,
             chat::send_chat_message,
@@ -375,6 +381,8 @@ pub fn run() {
             chat::react_chat_message,
             transfer::pick_file_to_send,
             transfer::pick_files_to_send,
+            transfer::pick_folder_to_send,
+            transfer::get_files_metadata,
             transfer::pick_download_dir,
             transfer::open_file,
             transfer::show_in_folder,

@@ -339,3 +339,53 @@
 - **Automated Unit Tests (12/12 passing)**:
   - Added unit test `updater::tests::test_is_newer_version` verifying semver comparison across edge cases (`0.2.3 > 0.2.2`, `1.0.0 > 0.2.2`, `v0.2.3 > v0.2.2`, equal and older versions).
   - All 12 unit tests pass in 0.05s.
+
+---
+
+## Phase 15: Complete UI Redesign (ChatGPT-Inspired Minimal Design) & Workspaces (Completed)
+
+### What Works
+- **Complete Visual Overhaul (ChatGPT Aesthetic)**:
+  - Clean, spacious, typography-focused desktop experience inspired by ChatGPT's minimalist interface.
+  - Eliminated glassmorphism and heavy radial blur decorations in favor of a crisp, neutral palette:
+    - Light: `#FFFFFF` (main), `#F7F7F8` (sidebar), `#EEEEF0` (hover), `#E8E8EA` (border), `#202123` (text), `#8E8E93` (secondary text), `#635BDB` (accent).
+    - Dark: `#212121` (main), `#171717` (sidebar), `#2A2A2A` (surface), `#2F2F2F` (hover), `#3A3A3A` (border), `#ECECEC` (text), `#A1A1AA` (secondary text), `#635BDB` (accent).
+    - System theme detection with live OS appearance matching.
+  - Primary font: Inter with native system font fallbacks.
+- **250px Minimal Navigation Sidebar**:
+  - Clean brand header with origami 3D icon and collapse toggle button.
+  - 4 Primary Workspace Navigation Buttons with live unread/active counters:
+    - **Messages** (`ti-message-dots`)
+    - **Nearby** (`ti-radar-2`)
+    - **Send Files** (`ti-upload`)
+    - **Transfers** (`ti-arrows-transfer-down`)
+  - Sub-section for active peer conversations with quick search (`Ctrl+F`).
+  - Bottom Profile Bar: User avatar, friendly name, presence indicator, presence popover menu (Available, Busy, Away, Offline, custom status with auto-expiration), theme toggle, and Settings button with update notification badge.
+- **Workspace 1: ChatGPT-Style Messages**:
+  - Centered message stream (`max-width: 800px`) with date separators and comfortable line spacing.
+  - Hover action bar for messages: Reply with quote banner, React (👍, ❤️, 😂, 😮, 😢, 🔥), Copy, Edit, and Delete.
+  - Fixed rounded bottom composer with auto-resizing textarea, attachment button, emoji popover, send button, Enter to send, Shift+Enter for newline.
+  - Native drag-and-drop overlay and clipboard image paste support.
+  - Inline file transfer cards with live progress bars, speed, ETA, Open, and Show in Folder actions.
+- **Workspace 2: Nearby Devices Clean List**:
+  - Replaced bulky cards with a streamlined table/list view.
+  - Device rows display device icon, name, custom nickname, OS tag, status pill, IP:port, interactive favorite star, and quick actions ("Message", "Send Files").
+  - Filter pills: All, Desktops & Laptops, Mobile, Favorites.
+  - Direct "+ Connect by IP" button and rescan action.
+- **Workspace 3: Dedicated Send Files Workspace**:
+  - Target recipient selector with live device status.
+  - Large drag-and-drop file/folder staging zone.
+  - Native file picker (`pick_files_to_send`) and folder picker (`pick_folder_to_send`) with recursive discovery.
+  - Staging manager: list of selected files with icons, formatted file sizes, individual removal, total size summary, and batch send execution routing to Transfers.
+- **Workspace 4: Professional Transfer Manager**:
+  - Tabbed direction filter: **All**, **Incoming**, **Outgoing**.
+  - Status filters: **All Status**, **Active**, **Completed**, **Failed / Cancelled**.
+  - "Clear History" button backed by SQLite `clear_all_transfers` backend command.
+  - Rows show file icon, file name, formatted size, counterpart device, direction badge, progress bar, MB/s speed, time remaining, and status.
+- **Custom Context Menu**:
+  - Sleek right-click context menu on messages (Copy, Reply, React, Edit, Delete), peers (Message, Send Files, Rename, Favorite, Block), and transfers (Open File, Show in Folder, Cancel, Retry).
+- **Settings Modal & Modals**:
+  - Clean tabs for General, Devices, Files, Network Diagnostics, Appearance, and About & Updates.
+  - Connect by IP modal, Rename modal, and Image Lightbox modal.
+- **Automated Unit Tests (12/12 passing)**:
+  - Verified all 12 backend unit tests pass in 0.05s with 0 errors.

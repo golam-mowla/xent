@@ -389,3 +389,27 @@
   - Connect by IP modal, Rename modal, and Image Lightbox modal.
 - **Automated Unit Tests (12/12 passing)**:
   - Verified all 12 backend unit tests pass in 0.05s with 0 errors.
+
+---
+
+## Phase 16: File Transfer Stability, Message Retry Queue, Responsive Sidebar Drawer & Android Groundwork (Completed)
+
+### What Works
+- **Chat & Transfer Stability**:
+  - **Progress Throttling**: File transfer progress events are now throttled to at most 5/s per file; UI updates progress bars in-place instead of re-rendering the full chat timeline on every 512 KB chunk.
+  - **Queued Message Retries**: Background retry loop (`start_queue_flusher`) periodically checks every 4 seconds for undelivered / "Queued" messages and automatically delivers them as soon as the target peer is reachable.
+  - **Active Device Ping Check**: During heavy file transfers when Wi-Fi is saturated, discovery pruner directly pings peers before dropping them, preventing peers from falsely disappearing.
+  - **Parallel Upload Limiter**: Maximum 2 concurrent file uploads (`Semaphore`), preventing network starvation.
+  - **Offloaded Disk I/O**: Chunk writes are executed on `tokio::task::spawn_blocking` to keep async worker threads responsive.
+  - **Atomic Destination File Reservation**: Uses `create_new(true)` to atomically reserve destination files, preventing duplicate name collisions from corrupting transfers.
+  - **Clean Partial File Cleanup**: Declined or cancelled incoming transfers automatically remove incomplete or empty files from disk.
+- **Sidebar & Mobile Drawer Polish**:
+  - **True 68px Collapsed Rail**: Sidebar now properly collapses to 68px width (updating `min-width`) and remembers collapsed state in `localStorage`.
+  - **Responsive Mobile Drawer**: On narrow screens (`max-width: 720px`), sidebar transforms into a slide-in drawer with toggle FAB and backdrop.
+- **Cross-Platform & Android Groundwork**:
+  - Added `paths.rs` supporting app-private folders and download paths for Android vs Desktop.
+  - Gated desktop-only features (tray, native file pickers) with `#[cfg(desktop)]` and `#[cfg(not(target_os = "android"))]`.
+  - Safe shell launchers: Windows `rundll32 url.dll,FileProtocolHandler` and `explorer /select` with `raw_arg`, macOS `open` / `open -R`, Linux `xdg-open`.
+  - Added `.github/workflows/android.yml` for automated cloud APK builds and `scripts/android-patch.sh` for Wi-Fi multicast lock and network permissions.
+- **Automated Unit Tests (12/12 passing)**:
+  - Verified all 12 backend unit tests pass in 0.04s with 0 warnings.

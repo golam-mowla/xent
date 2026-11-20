@@ -3,14 +3,14 @@ use crate::discovery::DiscoveryManager;
 use crate::settings::SettingsState;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs::OpenOptions;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -73,6 +73,11 @@ pub struct TransferManager {
     response_notifiers: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
     response_results: Arc<RwLock<HashMap<String, bool>>>,
     uploads_started: Arc<RwLock<HashSet<String>>>,
+    /// Last time a progress event was sent to the UI, per transfer (throttling).
+    last_emit: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Limits how many files upload at the same time, so chat messages and
+    /// discovery packets are never starved by a pile of big files.
+    upload_slots: Arc<Semaphore>,
     app_handle: Option<AppHandle>,
     db: Option<Arc<Database>>,
 }
@@ -115,8 +120,39 @@ impl TransferManager {
             response_notifiers: Arc::new(RwLock::new(HashMap::new())),
             response_results: Arc::new(RwLock::new(HashMap::new())),
             uploads_started: Arc::new(RwLock::new(HashSet::new())),
+            last_emit: Arc::new(Mutex::new(HashMap::new())),
+            upload_slots: Arc::new(Semaphore::new(MAX_PARALLEL_UPLOADS)),
             app_handle,
             db,
+        }
+    }
+
+    pub fn upload_slots(&self) -> Arc<Semaphore> {
+        self.upload_slots.clone()
+    }
+
+    /// True at most ~5 times per second per transfer. Progress events used to be
+    /// sent for every 512 KB chunk, which made the UI rebuild itself so often
+    /// that typing and sending messages felt frozen during a transfer.
+    fn throttle_ok(&self, transfer_id: &str) -> bool {
+        let mut map = self.last_emit.lock().unwrap();
+        let now = Instant::now();
+        match map.get(transfer_id) {
+            Some(last) if now.duration_since(*last) < Duration::from_millis(200) => false,
+            _ => {
+                map.insert(transfer_id.to_string(), now);
+                true
+            }
+        }
+    }
+
+    /// An incoming file that was declined or cancelled leaves an empty/partial
+    /// file behind. Remove it.
+    fn cleanup_partial(t: &FileTransferInfo) {
+        if t.is_incoming {
+            if let Some(ref p) = t.file_path {
+                let _ = std::fs::remove_file(p);
+            }
         }
     }
 
@@ -163,7 +199,12 @@ impl TransferManager {
         }
         let mut lock = self.transfers.write().unwrap();
         if let Some(t) = lock.get_mut(transfer_id) {
+            // A late cancel must never turn a finished transfer into a cancelled one.
+            if t.status == TransferStatus::Completed {
+                return;
+            }
             t.status = TransferStatus::Cancelled;
+            Self::cleanup_partial(t);
             if let Some(ref handle) = self.app_handle {
                 let _ = handle.emit("file_transfer_progress", t.clone());
             }
@@ -197,6 +238,7 @@ impl TransferManager {
                 let _ = handle.emit("file_transfer_progress", t.clone());
             }
             if !accepted {
+                Self::cleanup_partial(t);
                 self.maybe_record_history(t);
             }
         }
@@ -232,11 +274,15 @@ impl TransferManager {
             {
                 return;
             }
+            // Always tell the UI about state changes; throttle plain progress ticks.
+            let is_tick = status == TransferStatus::Transferring && t.status == TransferStatus::Transferring;
             t.transferred_bytes = transferred_bytes;
             t.speed_mbps = speed_mbps;
             t.status = status;
-            if let Some(ref handle) = self.app_handle {
-                let _ = handle.emit("file_transfer_progress", t.clone());
+            if !is_tick || self.throttle_ok(transfer_id) {
+                if let Some(ref handle) = self.app_handle {
+                    let _ = handle.emit("file_transfer_progress", t.clone());
+                }
             }
             self.maybe_record_history(t);
         }
@@ -320,8 +366,10 @@ impl TransferManager {
         let updated = self
             .get_transfer(transfer_id)
             .ok_or_else(|| "Transfer not found".to_string())?;
-        if let Some(ref handle) = self.app_handle {
-            let _ = handle.emit("file_transfer_progress", updated.clone());
+        if just_completed || self.throttle_ok(transfer_id) {
+            if let Some(ref handle) = self.app_handle {
+                let _ = handle.emit("file_transfer_progress", updated.clone());
+            }
         }
         if just_completed {
             // Incoming files used to be missing from the history.
@@ -335,8 +383,15 @@ impl TransferManager {
 // Commands
 #[tauri::command]
 pub async fn pick_file_to_send() -> Option<String> {
-    let file = rfd::AsyncFileDialog::new().pick_file().await;
-    file.map(|f| f.path().to_string_lossy().to_string())
+    #[cfg(not(target_os = "android"))]
+    {
+        let file = rfd::AsyncFileDialog::new().pick_file().await;
+        return file.map(|f| f.path().to_string_lossy().to_string());
+    }
+    #[cfg(target_os = "android")]
+    {
+        None
+    }
 }
 
 #[tauri::command]
@@ -498,7 +553,22 @@ pub async fn start_file_upload(
 }
 
 const UPLOAD_CHUNK_SIZE: usize = 512 * 1024;
+const MAX_PARALLEL_UPLOADS: usize = 2;
 const UPLOAD_CHUNK_RETRIES: u32 = 3;
+
+/// Fill `buf` as far as possible (a plain read can return fewer bytes).
+async fn read_full(file: &mut tokio::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
+    use tokio::io::AsyncReadExt;
+    let mut n = 0;
+    while n < buf.len() {
+        let r = file.read(&mut buf[n..]).await?;
+        if r == 0 {
+            break;
+        }
+        n += r;
+    }
+    Ok(n)
+}
 
 async fn post_chunk(
     client: &reqwest::Client,
@@ -559,7 +629,16 @@ pub fn spawn_upload(mgr: Arc<TransferManager>, transfer_id: String) -> Result<()
     tokio::spawn(async move {
         let t_id = transfer_id;
 
-        let mut file = match File::open(&file_path) {
+        // Wait for a free upload slot (max 2 files at once).
+        let _slot = match mgr.upload_slots().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        if cancel_flag.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let mut file = match tokio::fs::File::open(&file_path).await {
             Ok(f) => f,
             Err(e) => {
                 mgr.mark_failed(&t_id, &format!("Cannot open file: {}", e));
@@ -604,7 +683,7 @@ pub fn spawn_upload(mgr: Arc<TransferManager>, transfer_id: String) -> Result<()
                 return;
             }
 
-            let bytes_read = match file.read(&mut buffer) {
+            let bytes_read = match read_full(&mut file, &mut buffer).await {
                 Ok(0) => break, // EOF
                 Ok(n) => n,
                 Err(e) => {
@@ -689,16 +768,20 @@ pub fn get_transfer_history(
 
 #[tauri::command]
 pub async fn pick_files_to_send() -> Result<Vec<String>, String> {
-    let files = rfd::AsyncFileDialog::new().pick_files().await;
-    match files {
-        Some(handles) => {
-            let paths: Vec<String> = handles
+    #[cfg(not(target_os = "android"))]
+    {
+        let files = rfd::AsyncFileDialog::new().pick_files().await;
+        return match files {
+            Some(handles) => Ok(handles
                 .into_iter()
                 .map(|h| h.path().to_string_lossy().to_string())
-                .collect();
-            Ok(paths)
-        }
-        None => Ok(Vec::new()),
+                .collect()),
+            None => Ok(Vec::new()),
+        };
+    }
+    #[cfg(target_os = "android")]
+    {
+        Err("Sending files from Android needs the Android file picker (not added yet)".to_string())
     }
 }
 
@@ -711,27 +794,34 @@ pub struct SelectedFileMeta {
 
 #[tauri::command]
 pub async fn pick_folder_to_send() -> Result<Vec<String>, String> {
-    let folder = rfd::AsyncFileDialog::new().pick_folder().await;
-    let mut files = Vec::new();
-    if let Some(h) = folder {
-        let root = h.path();
-        if root.is_dir() {
-            fn collect_files(dir: &std::path::Path, acc: &mut Vec<String>) {
-                if let Ok(entries) = std::fs::read_dir(dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_file() {
-                            acc.push(path.to_string_lossy().to_string());
-                        } else if path.is_dir() {
-                            collect_files(&path, acc);
+    #[cfg(target_os = "android")]
+    {
+        Err("Folder sending is not available on Android".to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let folder = rfd::AsyncFileDialog::new().pick_folder().await;
+        let mut files = Vec::new();
+        if let Some(h) = folder {
+            let root = h.path();
+            if root.is_dir() {
+                fn collect_files(dir: &std::path::Path, acc: &mut Vec<String>) {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_file() {
+                                acc.push(path.to_string_lossy().to_string());
+                            } else if path.is_dir() {
+                                collect_files(&path, acc);
+                            }
                         }
                     }
                 }
+                collect_files(root, &mut files);
             }
-            collect_files(root, &mut files);
         }
+        Ok(files)
     }
-    Ok(files)
 }
 
 #[tauri::command]
@@ -755,26 +845,52 @@ pub fn get_files_metadata(paths: Vec<String>) -> Vec<SelectedFileMeta> {
 pub async fn pick_download_dir(
     settings_state: State<'_, Arc<SettingsState>>,
 ) -> Result<Option<String>, String> {
-    let folder = rfd::AsyncFileDialog::new().pick_folder().await;
-    if let Some(h) = folder {
-        let path = h.path().to_string_lossy().to_string();
-        settings_state.update_download_dir(path.clone())?;
-        Ok(Some(path))
-    } else {
-        Ok(None)
+    #[cfg(target_os = "android")]
+    {
+        let _ = settings_state;
+        return Err("Changing the download folder is not available on Android".to_string());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let folder = rfd::AsyncFileDialog::new().pick_folder().await;
+        if let Some(h) = folder {
+            let path = h.path().to_string_lossy().to_string();
+            settings_state.update_download_dir(path.clone())?;
+            Ok(Some(path))
+        } else {
+            Ok(None)
+        }
     }
 }
 
 #[tauri::command]
 pub fn open_file(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err("File not found (moved or deleted)".to_string());
+    }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", &path])
+        // `cmd /c start` breaks on names containing & ^ % and similar characters.
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &path])
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "android")]
     {
         let _ = path;
     }
@@ -783,14 +899,37 @@ pub fn open_file(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn show_in_folder(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err("File not found (moved or deleted)".to_string());
+    }
     #[cfg(target_os = "windows")]
     {
+        // The quotes must reach explorer.exe unchanged, so use raw_arg.
+        use std::os::windows::process::CommandExt;
         std::process::Command::new("explorer")
-            .args([&format!("/select,\"{}\"", path)])
+            .raw_arg(format!("/select,\"{}\"", path))
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+    {
+        let dir = std::path::Path::new(&path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "android")]
     {
         let _ = path;
     }

@@ -368,23 +368,41 @@ async fn file_request_handler(
     let safe_name = sanitize_file_name(&req.file_name);
     let mut dest_path = download_dir.join(&safe_name);
 
-    // File name deduplication if file already exists
-    if dest_path.exists() {
-        let stem = dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("file").to_string();
-        let ext = dest_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_string();
-        let mut counter = 1;
-        loop {
-            let new_name = if ext.is_empty() {
-                format!("{} ({})", stem, counter)
-            } else {
-                format!("{} ({}).{}", stem, counter, ext)
-            };
-            let candidate = download_dir.join(new_name);
-            if !candidate.exists() {
-                dest_path = candidate;
-                break;
+    // Reserve the destination file right now (create_new is atomic). Before, two
+    // files with the same name sent at the same time both got the same path and
+    // wrote into each other, corrupting both.
+    let mut counter = 0;
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dest_path)
+        {
+            Ok(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                counter += 1;
+                let stem = std::path::Path::new(&safe_name)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("file")
+                    .to_string();
+                let ext = std::path::Path::new(&safe_name)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let new_name = if ext.is_empty() {
+                    format!("{} ({})", stem, counter)
+                } else {
+                    format!("{} ({}).{}", stem, counter, ext)
+                };
+                dest_path = download_dir.join(new_name);
+                if counter > 10_000 {
+                    break;
+                }
             }
-            counter += 1;
+            // Any other error will be reported properly when the first chunk arrives.
+            Err(_) => break,
         }
     }
 
@@ -475,9 +493,13 @@ async fn file_chunk_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // Returning a bare `String` as the error produced HTTP 200, so the sender
     // believed every chunk was saved even when the receiver failed to write it.
-    let updated = state
-        .transfer_mgr
-        .write_incoming_chunk(&transfer_id, query.offset, &body)
+    // Disk writes are blocking: run them off the async worker threads so a big
+    // transfer can not starve chat messages and other requests.
+    let mgr = state.transfer_mgr.clone();
+    let offset = query.offset;
+    let updated = tokio::task::spawn_blocking(move || mgr.write_incoming_chunk(&transfer_id, offset, &body))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     Ok(Json(serde_json::json!({
         "success": true,

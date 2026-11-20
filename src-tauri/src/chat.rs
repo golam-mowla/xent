@@ -1,11 +1,11 @@
 use crate::db::{ChatMessage, Database};
-use crate::discovery::DiscoveryManager;
+use crate::discovery::{DiscoveryManager, Peer};
 use crate::server::SendMessagePayload;
 use crate::settings::SettingsState;
 use chrono::Local;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 #[tauri::command]
@@ -64,7 +64,7 @@ pub async fn send_chat_message(
     if let Some(peer) = peer_opt {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(15))
             .build()
             .map_err(|e| format!("HTTP client error: {}", e))?;
 
@@ -257,4 +257,101 @@ pub fn get_unread_badges(
 ) -> Result<std::collections::HashMap<String, u32>, String> {
     db.get_unread_counts()
         .map_err(|e| format!("Database error: {}", e))
+}
+
+
+/// Sends one stored message to a peer. Used by the retry loop below.
+async fn deliver_stored(
+    client: &reqwest::Client,
+    peer: &Peer,
+    msg: &ChatMessage,
+) -> Result<(), String> {
+    let payload = SendMessagePayload {
+        id: msg.id.clone(),
+        sender_id: msg.sender_id.clone(),
+        sender_name: msg.sender_name.clone(),
+        receiver_id: peer.device_id.clone(),
+        receiver_name: peer.alias.clone(),
+        content: msg.content.clone(),
+        created_at: msg.created_at,
+        quote: msg.quote.clone(),
+    };
+    let url = format!("https://{}:{}/api/message", peer.ip, peer.port);
+    let res = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if res.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Peer returned error: {}", res.status()))
+    }
+}
+
+/// Background loop: every few seconds, deliver messages that are still "Queued"
+/// to peers that are reachable now. Before this existed, a message that failed
+/// once (for example during a big file transfer) stayed queued forever.
+pub fn start_queue_flusher(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let client = match reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(Duration::from_secs(15))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+
+            let db = match app.try_state::<Arc<Database>>() {
+                Some(d) => d.inner().clone(),
+                None => continue,
+            };
+            let discovery = match app.try_state::<Arc<DiscoveryManager>>() {
+                Some(d) => d.inner().clone(),
+                None => continue,
+            };
+
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            let pending = match db.get_undelivered_messages(now_ms - 30_000) {
+                Ok(list) => list,
+                Err(_) => continue,
+            };
+            if pending.is_empty() {
+                continue;
+            }
+
+            let peers = discovery.get_peers();
+            let mut blocked_threads: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+            for mut msg in pending {
+                if blocked_threads.contains(&msg.thread_peer_id) {
+                    continue; // keep the original order per conversation
+                }
+                let peer = match peers.iter().find(|p| p.device_id == msg.thread_peer_id) {
+                    Some(p) => p.clone(),
+                    None => continue,
+                };
+                match deliver_stored(&client, &peer, &msg).await {
+                    Ok(()) => {
+                        let time_str = Local::now().format("%I:%M %p").to_string();
+                        let status = format!("Delivered, {}", time_str);
+                        let _ = db.update_status(&msg.id, &status);
+                        msg.status = status;
+                        let _ = app.emit("message_status_updated", &msg);
+                    }
+                    Err(_) => {
+                        blocked_threads.insert(msg.thread_peer_id.clone());
+                    }
+                }
+            }
+        }
+    });
 }

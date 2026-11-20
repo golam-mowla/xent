@@ -1386,10 +1386,56 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
   border-radius: 8px;
   box-shadow: 0 4px 20px rgba(0,0,0,0.5);
 }
+
+/* Collapsed sidebar (icon rail). min-width must change too, otherwise the
+   sidebar stays 260px wide and only its contents shrink. */
+.sidebar.collapsed { width: 68px; min-width: 68px; }
+.sidebar.collapsed .sidebar-header { flex-direction: column; height: auto; padding: 10px 0; gap: 8px; justify-content: center; }
+.sidebar.collapsed .brand-title,
+.sidebar.collapsed .brand-version,
+.sidebar.collapsed .nav-item span,
+.sidebar.collapsed .user-profile-info,
+.sidebar.collapsed .sidebar-sublist-wrapper,
+.sidebar.collapsed .profile-actions .btn-icon:first-child { display: none; }
+.sidebar.collapsed .sidebar-nav { padding: 10px 8px 4px 8px; }
+.sidebar.collapsed .nav-item { justify-content: center; padding: 10px 0; position: relative; }
+.sidebar.collapsed .nav-item .nav-item-badge { display: none !important; }
+.sidebar.collapsed .sidebar-footer { padding: 8px 4px; align-items: center; }
+.sidebar.collapsed .sidebar-footer > div:last-of-type { flex-direction: column; gap: 6px; }
+.sidebar.collapsed .user-profile-btn { justify-content: center; padding: 6px 0; }
+.sidebar.collapsed .sidebar-nav + .sidebar-sublist-wrapper { flex: 0; }
+.sidebar.collapsed ~ .main-content { min-width: 0; }
+
+/* Narrow screens (phones): sidebar becomes a slide-in drawer */
+.drawer-fab, .drawer-backdrop { display: none; }
+@media (max-width: 720px) {
+  .sidebar, .sidebar.collapsed {
+    position: fixed; left: 0; top: 0; bottom: 0;
+    width: 280px; min-width: 280px;
+    transform: translateX(-100%);
+    transition: transform 220ms ease;
+    z-index: 200;
+  }
+  .sidebar.drawer-open { transform: none; box-shadow: 0 0 40px rgba(0,0,0,0.35); }
+  .sidebar.collapsed .brand-title, .sidebar.collapsed .brand-version,
+  .sidebar.collapsed .nav-item span, .sidebar.collapsed .user-profile-info,
+  .sidebar.collapsed .sidebar-sublist-wrapper { display: revert; }
+  .drawer-fab {
+    display: flex; align-items: center; justify-content: center;
+    position: fixed; top: calc(env(safe-area-inset-top, 0px) + 8px); left: 8px;
+    width: 38px; height: 38px; border-radius: 10px; z-index: 150;
+    background: var(--bg-surface); border: 1px solid var(--border);
+    color: var(--text-primary); cursor: pointer;
+  }
+  .drawer-backdrop.show { display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 190; }
+  .main-content { width: 100vw; }
+}
 </style>
 </head>
 <body>
 
+<button class="drawer-fab" id="btn-open-drawer" title="Menu"><i class="ti ti-menu-2"></i></button>
+<div class="drawer-backdrop" id="drawer-backdrop"></div>
 <div class="app-container">
   <!-- LEFT SIDEBAR -->
   <aside class="sidebar" id="sidebar">
@@ -1398,7 +1444,7 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
       <div class="brand-wrapper" id="brand-logo-btn" title="About Xent">
         <img src="./app-icon.png" class="brand-logo" alt="Xent">
         <span class="brand-title">Xent</span>
-        <span class="brand-version" id="brand-version-tag">v0.2.4</span>
+        <span class="brand-version" id="brand-version-tag">v0.2.5</span>
       </div>
       <button class="btn-icon" id="btn-collapse-sidebar" title="Toggle Sidebar">
         <i class="ti ti-layout-sidebar-left-collapse"></i>
@@ -1812,7 +1858,7 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
       <div class="settings-pane" id="pane-about">
         <div style="text-align:center;padding:10px 0">
           <img src="./app-icon.png" width="64" height="64" style="border-radius:14px;box-shadow:var(--shadow-md);display:inline-block" alt="Xent">
-          <h2 style="font-size:18px;font-weight:700;margin-top:8px">Xent <span id="about-ver-text" style="font-size:12px;font-weight:600;color:var(--text-secondary)">v0.2.4</span></h2>
+          <h2 style="font-size:18px;font-weight:700;margin-top:8px">Xent <span id="about-ver-text" style="font-size:12px;font-weight:600;color:var(--text-secondary)">v0.2.5</span></h2>
           <p style="font-size:12px;color:var(--text-secondary)">ChatGPT-inspired minimal LAN messenger & file transfer.</p>
         </div>
 
@@ -2075,24 +2121,44 @@ function switchView(viewId) {
 document.querySelectorAll('.nav-item').forEach(function(btn) {
   btn.addEventListener('click', function() {
     switchView(this.getAttribute('data-view'));
+    if (typeof setDrawerOpen === 'function' && isNarrowScreen()) setDrawerOpen(false);
   });
 });
 
-// Sidebar collapse toggle
+// Sidebar collapse toggle (state is remembered)
 var sidebarEl = document.getElementById('sidebar');
 var btnCollapseSidebar = document.getElementById('btn-collapse-sidebar');
+var drawerBackdrop = document.getElementById('drawer-backdrop');
+
+function isNarrowScreen() { return window.matchMedia('(max-width: 720px)').matches; }
+
+function setSidebarCollapsed(collapsed) {
+  if (!sidebarEl) return;
+  sidebarEl.classList.toggle('collapsed', collapsed);
+  if (btnCollapseSidebar) {
+    var ic = btnCollapseSidebar.querySelector('i');
+    if (ic) ic.className = collapsed ? 'ti ti-layout-sidebar-left-expand' : 'ti ti-layout-sidebar-left-collapse';
+    btnCollapseSidebar.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+  }
+  try { localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0'); } catch(_) {}
+}
+
+function setDrawerOpen(open) {
+  if (!sidebarEl) return;
+  sidebarEl.classList.toggle('drawer-open', open);
+  if (drawerBackdrop) drawerBackdrop.classList.toggle('show', open);
+}
+
 if (btnCollapseSidebar) {
   btnCollapseSidebar.addEventListener('click', function() {
-    var isCollapsed = sidebarEl.style.width === '68px';
-    sidebarEl.style.width = isCollapsed ? '260px' : '68px';
-    document.getElementById('sidebar-sublist').style.display = isCollapsed ? 'flex' : 'none';
-    document.querySelectorAll('.nav-item span').forEach(function(s){ s.style.display = isCollapsed ? '' : 'none'; });
-    document.querySelector('.brand-title').style.display = isCollapsed ? '' : 'none';
-    document.querySelector('.brand-version').style.display = isCollapsed ? '' : 'none';
-    document.querySelector('.user-profile-info').style.display = isCollapsed ? '' : 'none';
-    this.querySelector('i').className = isCollapsed ? 'ti ti-layout-sidebar-left-collapse' : 'ti ti-layout-sidebar-left-expand';
+    if (isNarrowScreen()) { setDrawerOpen(false); return; }
+    setSidebarCollapsed(!sidebarEl.classList.contains('collapsed'));
   });
 }
+var btnOpenDrawer = document.getElementById('btn-open-drawer');
+if (btnOpenDrawer) btnOpenDrawer.addEventListener('click', function() { setDrawerOpen(true); });
+if (drawerBackdrop) drawerBackdrop.addEventListener('click', function() { setDrawerOpen(false); });
+try { if (localStorage.getItem('sidebarCollapsed') === '1') setSidebarCollapsed(true); } catch(_) {}
 
 // --- Presence & Profile Management ---
 var presencePopover = document.getElementById('presence-popover');
@@ -2272,6 +2338,7 @@ function renderSidebarSublist() {
   peerConversationsList.querySelectorAll('.peer-row').forEach(function(row) {
     row.addEventListener('click', function() {
       selectPeer(this.getAttribute('data-id'));
+      if (isNarrowScreen()) setDrawerOpen(false);
     });
     row.addEventListener('contextmenu', function(e) {
       e.preventDefault();
@@ -2302,7 +2369,7 @@ var chatActionsGroup = document.getElementById('chat-actions-group');
 var btnPeerFav = document.getElementById('btn-peer-fav');
 var composerTextarea = document.getElementById('composer-textarea');
 
-function selectPeer(peerId) {
+function selectPeer(peerId, keepTimeline) {
   activePeerId = peerId;
   unreadCounts[peerId] = 0;
   var peer = peersMap[peerId];
@@ -2340,8 +2407,10 @@ function selectPeer(peerId) {
 
   // Mark thread read in backend and load timeline
   if (window.__TAURI__ && window.__TAURI__.core) {
-    window.__TAURI__.core.invoke('mark_thread_read', { peerId: peerId }).catch(console.error);
-    loadChatTimeline(peerId);
+    if (!keepTimeline) {
+      window.__TAURI__.core.invoke('mark_thread_read', { peerId: peerId }).catch(console.error);
+      loadChatTimeline(peerId);
+    }
   }
 }
 
@@ -2399,8 +2468,34 @@ function loadChatTimeline(peerId) {
   }).catch(console.error);
 }
 
+// Map a stored transfer record status to the status shape the cards expect.
+function recordStatusToCardStatus(st) {
+  if (st === 'completed') return 'Completed';
+  if (st === 'declined') return 'Declined';
+  if (st === 'failed') return { Failed: 'Transfer failed' };
+  return 'Cancelled';
+}
+
+// Redraw at most once per animation frame, no matter how many events arrive.
+var renderQueued = false;
+function scheduleRender(forceScroll) {
+  if (forceScroll) renderForceScroll = true;
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(function() {
+    renderQueued = false;
+    renderChatThread();
+  });
+}
+var renderForceScroll = false;
+
 function renderChatThread() {
   if (!messagesStream) return;
+  // Only jump to the bottom if the user was already there (or we were asked to).
+  var wasNearBottom = !messagesScrollArea ||
+    (messagesScrollArea.scrollHeight - messagesScrollArea.scrollTop - messagesScrollArea.clientHeight) < 120;
+  var forceScroll = renderForceScroll;
+  renderForceScroll = false;
   messagesStream.innerHTML = '';
 
   if (chatTimelineHistory.length === 0) {
@@ -2437,7 +2532,7 @@ function renderChatThread() {
         file_size: item.file_size,
         transferred_bytes: item.file_size,
         speed_mbps: 0,
-        status: item.status === 'completed' ? 'Completed' : (item.status === 'declined' ? 'Declined' : 'Cancelled'),
+        status: recordStatusToCardStatus(item.status),
         is_incoming: item.receiver_name === mySettings.alias,
         file_path: item.local_path
       };
@@ -2446,13 +2541,41 @@ function renderChatThread() {
   });
 
   // Render any active in-flight transfers for this peer
+  // (skip the ones that are already shown from history, or they appear twice)
+  var shownIds = {};
+  chatTimelineHistory.forEach(function(it) { if (it.kind === 'transfer') shownIds[it.id] = true; });
   Object.values(activeTransfers).forEach(function(t) {
-    if (t.peer_id === activePeerId) {
+    if (t.peer_id === activePeerId && !shownIds[t.transfer_id]) {
       messagesStream.appendChild(createFileCardElement(t));
     }
   });
 
-  messagesScrollArea.scrollTop = messagesScrollArea.scrollHeight;
+  if (forceScroll || wasNearBottom) messagesScrollArea.scrollTop = messagesScrollArea.scrollHeight;
+}
+
+// Update a transfer card in place (progress bar + text) without rebuilding the chat.
+function patchFileCard(t) {
+  var el = document.getElementById('transfer-' + t.transfer_id);
+  if (!el) return false;
+  var pct = t.file_size > 0 ? Math.min(100, Math.round((t.transferred_bytes / t.file_size) * 100)) : 0;
+  var fill = el.querySelector('.progress-fill');
+  if (fill) fill.style.width = pct + '%';
+  var sub = el.querySelector('.file-card-sub');
+  if (sub) sub.innerHTML = fileCardSubInfo(t);
+  var st = el.querySelector('.file-card-status');
+  if (st) {
+    var rem = t.file_size - t.transferred_bytes;
+    var secLeft = t.speed_mbps > 0 ? Math.ceil((rem / (1024 * 1024)) / t.speed_mbps) : 0;
+    st.textContent = pct + '%' + (secLeft > 0 ? ' · ' + secLeft + 's left' : '');
+  }
+  return true;
+}
+
+function fileCardSubInfo(t) {
+  var counterpart = nameById(t.peer_id, t.is_incoming ? t.sender_name : t.receiver_name);
+  var info = (t.is_incoming ? 'From ' : 'To ') + escapeHtml(counterpart) + ' · ' + formatBytes(t.file_size);
+  if (t.speed_mbps > 0) info += ' · ' + t.speed_mbps.toFixed(1) + ' MB/s';
+  return info;
 }
 
 function createMessageElement(msg) {
@@ -2572,7 +2695,7 @@ function createFileCardElement(t) {
       '</div>' +
     '</div>' +
     '<div class="progress-track"><div class="progress-fill" style="width:' + pct + '%"></div></div>' +
-    '<p style="font-size:11px;color:var(--text-secondary);margin-top:6px">' + statusText + '</p>' +
+    '<p class="file-card-status" style="font-size:11px;color:var(--text-secondary);margin-top:6px">' + statusText + '</p>' +
     actionsHtml +
   '</div>';
 
@@ -2611,7 +2734,8 @@ if (btnCancelReply) {
 function sendMessage() {
   if (!composerTextarea) return;
   var text = composerTextarea.value.trim();
-  if (!text || !activePeerId) return;
+  if (!text) return;
+  if (!activePeerId) { showToast('Select a device first'); return; }
 
   var quoteToSend = currentQuote ? (currentQuote.author + ': ' + currentQuote.content) : null;
   composerTextarea.value = '';
@@ -2625,10 +2749,15 @@ function sendMessage() {
       content: text,
       quote: quoteToSend
     }).then(function(sentMsg) {
-      sentMsg.kind = 'message';
-      chatTimelineHistory.push(sentMsg);
-      renderChatThread();
-    }).catch(function(err){ console.error('Send error:', err); });
+      // The status event may already have added this message; do not add it twice.
+      var exists = chatTimelineHistory.some(function(m){ return m.kind === 'message' && m.id === sentMsg.id; });
+      if (!exists) { sentMsg.kind = 'message'; chatTimelineHistory.push(sentMsg); }
+      scheduleRender(true);
+    }).catch(function(err){
+      console.error('Send error:', err);
+      showToast('Message not sent: ' + err);
+      if (activePeerId) loadChatTimeline(activePeerId);
+    });
   }
 }
 
@@ -2694,7 +2823,7 @@ function sendOneFile(peerId, path) {
   window.__TAURI__.core.invoke('send_file_request', { peerId: peerId, filePath: path })
     .then(function(info) {
       activeTransfers[info.transfer_id] = info;
-      if (info.peer_id === activePeerId) renderChatThread();
+      if (info.peer_id === activePeerId) scheduleRender(true);
       renderTransfersManager();
       showToast('Sending ' + info.file_name);
     })
@@ -3029,7 +3158,31 @@ var transfersManagerList = document.getElementById('transfers-manager-list');
 var currentTransferTab = 'all';     // all, incoming, outgoing
 var currentTransferStatus = 'all';  // all, active, completed, failed
 
+var transfersRenderTimer = null;
+var transfersRenderPending = false;
+// The manager reads the database each time it draws, so never do it more than
+// twice per second.
 function renderTransfersManager() {
+  if (transfersRenderTimer) { transfersRenderPending = true; return; }
+  renderTransfersManagerNow();
+  transfersRenderTimer = setTimeout(function() {
+    transfersRenderTimer = null;
+    if (transfersRenderPending) { transfersRenderPending = false; renderTransfersManager(); }
+  }, 500);
+}
+
+function updateActiveTransferBadge() {
+  var activeCount = Object.values(activeTransfers).filter(function(x){
+    return x.status === 'Transferring' || x.status === 'Pending' || x.status === 'Accepted';
+  }).length;
+  var badgeT = document.getElementById('badge-active-transfers');
+  if (badgeT) {
+    badgeT.style.display = activeCount > 0 ? 'inline-block' : 'none';
+    badgeT.textContent = String(activeCount);
+  }
+}
+
+function renderTransfersManagerNow() {
   if (!transfersManagerList || !window.__TAURI__ || !window.__TAURI__.core) return;
 
   window.__TAURI__.core.invoke('get_transfer_history', { limit: 200 }).then(function(records) {
@@ -3066,7 +3219,7 @@ function renderTransfersManager() {
           peer_id: r.peer_id,
           sender_name: r.sender_name,
           receiver_name: r.receiver_name,
-          status: r.status === 'completed' ? 'Completed' : (r.status === 'declined' ? 'Declined' : 'Cancelled'),
+          status: recordStatusToCardStatus(r.status),
           file_path: r.local_path,
           created_at: new Date(r.created_at).getTime()
         });
@@ -3129,7 +3282,7 @@ function renderTransfersManager() {
           '<button class="btn ghost sm" onclick="showInFolder(\'' + escapeHtml(item.file_path).replace(/\\/g, '\\\\') + '\')"><i class="ti ti-folder"></i>Folder</button>';
       } else if (item.status === 'Transferring' || item.status === 'Pending') {
         actsHtml = '<button class="btn ghost sm" onclick="cancelTransfer(\'' + item.id + '\')">Cancel</button>';
-      } else if ((item.status === 'Declined' || item.status === 'Cancelled') && !item.is_incoming && item.file_path) {
+      } else if ((item.status === 'Declined' || item.status === 'Cancelled' || (item.status && item.status.Failed)) && !item.is_incoming && item.file_path) {
         actsHtml = '<button class="btn ghost sm" onclick="sendOneFile(\'' + item.peer_id + '\', \'' + escapeHtml(item.file_path).replace(/\\/g, '\\\\') + '\')"><i class="ti ti-refresh"></i>Retry</button>';
       }
 
@@ -3604,7 +3757,7 @@ if (window.__TAURI__ && window.__TAURI__.core) {
         var rem = Object.keys(peersMap).filter(function(k){ return !isBlocked(k); });
         selectPeer(rem.length ? rem[0] : null);
       } else if (activePeerId && peersMap[activePeerId]) {
-        selectPeer(activePeerId);
+        selectPeer(activePeerId, true);
       }
       renderSidebarSublist();
       if (currentView === 'view-nearby') renderNearbyWorkspace();
@@ -3620,9 +3773,11 @@ if (window.__TAURI__ && window.__TAURI__.core) {
       if (!msg) return;
 
       if (msg.thread_peer_id === activePeerId) {
+        var already = chatTimelineHistory.some(function(m){ return m.kind === 'message' && m.id === msg.id; });
+        if (already) return;
         msg.kind = 'message';
         chatTimelineHistory.push(msg);
-        renderChatThread();
+        scheduleRender(false);
         window.__TAURI__.core.invoke('mark_thread_read', { peerId: activePeerId }).catch(console.error);
       } else {
         unreadCounts[msg.thread_peer_id] = (unreadCounts[msg.thread_peer_id] || 0) + 1;
@@ -3640,7 +3795,7 @@ if (window.__TAURI__ && window.__TAURI__.core) {
           break;
         }
       }
-      renderChatThread();
+      scheduleRender(false);
     });
 
     window.__TAURI__.event.listen('peer_typing', function(ev) {
@@ -3703,11 +3858,14 @@ if (window.__TAURI__ && window.__TAURI__.core) {
     window.__TAURI__.event.listen('file_transfer_progress', function(ev) {
       var info = ev.payload;
       if (!info) return;
-      var isNew = !activeTransfers[info.transfer_id];
+      var prev = activeTransfers[info.transfer_id];
+      var isNew = !prev;
       activeTransfers[info.transfer_id] = info;
+      var stateChanged = isNew || JSON.stringify(prev.status) !== JSON.stringify(info.status);
 
       if (info.peer_id === activePeerId) {
-        renderChatThread();
+        // Progress ticks only move the bar; a full redraw is for state changes.
+        if (stateChanged || !patchFileCard(info)) scheduleRender(isNew);
       } else if (isNew && info.is_incoming) {
         unreadCounts[info.peer_id] = (unreadCounts[info.peer_id] || 0) + 1;
         renderSidebarSublist();
@@ -3717,6 +3875,7 @@ if (window.__TAURI__ && window.__TAURI__.core) {
       if (currentView === 'view-transfers') {
         renderTransfersManager();
       }
+      if (stateChanged) updateActiveTransferBadge();
     });
 
     window.__TAURI__.event.listen('tauri://drag-drop', function(ev) {

@@ -65,10 +65,8 @@ pub struct SettingsState {
 impl SettingsState {
     pub fn new(instance_override: Option<String>, port_override: Option<u16>) -> Self {
         let instance = instance_override.unwrap_or_else(|| "default".to_string());
-        let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Xent");
-        
+        let config_dir = crate::paths::data_dir();
+
         let _ = fs::create_dir_all(&config_dir);
         let config_file_name = if instance == "default" {
             "settings.json".to_string()
@@ -77,8 +75,7 @@ impl SettingsState {
         };
         let config_path = config_dir.join(config_file_name);
 
-        let default_download_dir = dirs::download_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
+        let default_download_dir = crate::paths::default_download_dir()
             .to_string_lossy()
             .to_string();
 
@@ -120,7 +117,7 @@ impl SettingsState {
         AppSettings {
             device_id,
             alias,
-            device_type: "desktop".to_string(),
+            device_type: crate::paths::device_type().to_string(),
             port,
             download_dir: download_dir.to_string(),
             theme: "system".to_string(),

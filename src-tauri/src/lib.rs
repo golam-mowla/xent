@@ -2,6 +2,7 @@ pub mod cert;
 pub mod chat;
 pub mod db;
 pub mod discovery;
+pub mod paths;
 pub mod server;
 pub mod settings;
 pub mod transfer;
@@ -12,7 +13,9 @@ use db::Database;
 use discovery::{DiscoveryManager, Peer};
 use settings::{AppSettings, SettingsState};
 use std::sync::Arc;
+#[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem};
+#[cfg(desktop)]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, State, WindowEvent};
 use transfer::TransferManager;
@@ -187,9 +190,7 @@ fn open_downloads_folder(state: State<'_, Arc<SettingsState>>) -> Result<(), Str
 
 #[tauri::command]
 fn open_log_folder() -> Result<(), String> {
-    let dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Xent");
+    let dir = paths::data_dir();
     let _ = std::fs::create_dir_all(&dir);
     #[cfg(target_os = "windows")]
     {
@@ -257,10 +258,13 @@ pub fn run() {
                 Some(db_for_server.clone()),
             ));
             handle.manage(transfer_mgr.clone());
+            chat::start_queue_flusher(handle.clone());
 
             let transfer_mgr_for_server = transfer_mgr.clone();
 
-            // Tray setup
+            // Tray setup (desktop only: Android has no system tray)
+            #[cfg(desktop)]
+            {
             let quit_i = MenuItem::with_id(app, "quit", "Quit Xent", true, None::<&str>)?;
             let show_i = MenuItem::with_id(app, "show", "Open Xent", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
@@ -307,6 +311,8 @@ pub fn run() {
                         }
                     })
                     .build(app)?;
+            }
+
             }
 
             tauri::async_runtime::spawn(async move {

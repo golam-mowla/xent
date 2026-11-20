@@ -29,6 +29,9 @@
   - **Send Files**: Dedicated file-sharing workspace with drag-and-drop zone, file and folder picker (`pick_folder_to_send`), staged files management, recipient picker, and batch transfer execution.
   - **Transfers**: Professional transfer manager with tabs (All, Incoming, Outgoing), filters (Active, Completed, Failed/Cancelled), live progress bars, speed and ETA readouts, and SQLite transfer history clearing.
 - **Custom Context Menu**: Right-click context menus across messages, nearby peers, and transfer rows.
+- **Resilient File Transfers & Auto-Retry Queue**: Live progress event throttling (5/s), non-blocking disk I/O, atomic destination reservation, partial file cleanup, and a background queue flusher that auto-delivers queued messages as soon as devices reconnect.
+- **Responsive Mobile Drawer & Collapsible Rail**: Sidebar collapses to a 68px icon rail (with saved state) and smoothly converts into a slide-in drawer on mobile/narrow screens.
+- **Android APK Build Pipeline**: Cloud build workflow (`.github/workflows/android.yml`), Wi-Fi multicast lock script, and path abstraction for Android.
 - **Teams-Style Presence & Dynamic Status**: Rich status indicators (*Available*, *Busy*, *Be right back*, *Appear offline*) with custom status messages (up to 80 characters) and configurable auto-clearing expiration (*Never*, *1 hour*, *4 hours*, *Today*).
 - **Instant Presence Broadcasting**: Dynamic UDP multicast announcements propagate presence changes in ~1 second across the local network without restarting.
 - **Appear Offline Mode**: Emits a multicast `bye` packet and suppresses broadcasts while keeping local server and chat capabilities intact.

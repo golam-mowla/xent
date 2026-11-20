@@ -646,6 +646,11 @@ impl DiscoveryManager {
     }
 
     async fn run_pruner(&self) {
+        let probe_client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(Duration::from_secs(3))
+            .build()
+            .ok();
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         loop {
             interval.tick().await;
@@ -680,13 +685,38 @@ impl DiscoveryManager {
                 }
             }
 
+            // A peer that stopped announcing is not necessarily gone: during a big
+            // file transfer the Wi-Fi is saturated and UDP announcements get lost.
+            // Ask it directly before removing it from the list.
+            let stale: Vec<(String, String, u16)> = {
+                let lock = self.peers.read().unwrap();
+                lock.values()
+                    .filter(|p| now.saturating_sub(p.last_seen) >= 15)
+                    .map(|p| (p.device_id.clone(), p.ip.clone(), p.port))
+                    .collect()
+            };
+            for (id, ip, port) in stale {
+                let alive = match &probe_client {
+                    Some(c) => match c.get(format!("https://{}:{}/api/ping", ip, port)).send().await {
+                        Ok(r) => r.status().is_success(),
+                        Err(_) => false,
+                    },
+                    None => false,
+                };
+                if alive {
+                    if let Some(p) = self.peers.write().unwrap().get_mut(&id) {
+                        p.last_seen = Self::now_secs();
+                    }
+                }
+            }
+
             let mut removed = false;
             {
                 let mut lock = self.peers.write().unwrap();
                 let initial_len = lock.len();
-                // If not seen in 15 seconds, peer is considered offline
+                // Still silent after the direct check: the peer is really offline.
                 lock.retain(|id, peer| {
-                    let active = now.saturating_sub(peer.last_seen) < 15;
+                    let active = Self::now_secs().saturating_sub(peer.last_seen) < 15;
                     if !active {
                         println!("[Discovery] Peer offline (timed out): {} ({})", peer.alias, id);
                     }

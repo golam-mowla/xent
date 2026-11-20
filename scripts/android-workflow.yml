@@ -1,0 +1,53 @@
+name: Android APK
+
+# Run it by hand: GitHub -> Actions -> "Android APK" -> Run workflow.
+# The APK appears under "Artifacts" at the bottom of the run page.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - run: npm install
+
+      - name: Create Android project
+        run: npx @tauri-apps/cli android init --ci
+
+      - name: Apply Xent Android patches
+        run: bash scripts/android-patch.sh
+
+      # A debug-signed APK installs on any phone without extra setup.
+      - name: Build APK
+        run: npx @tauri-apps/cli android build --apk --debug --target aarch64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xent-android-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk

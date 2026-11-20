@@ -2,7 +2,6 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,9 +56,7 @@ pub struct Database {
 
 impl Database {
     pub fn init(instance: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Xent");
+        let dir = crate::paths::data_dir();
         let _ = fs::create_dir_all(&dir);
 
         let db_name = if instance == "default" {
@@ -276,7 +273,7 @@ impl Database {
             "SELECT id, thread_peer_id, sender_id, sender_name, receiver_id, receiver_name, 
                     content, status, created_at, is_incoming, is_read, quote, is_edited, is_deleted, reactions
              FROM messages
-             WHERE thread_peer_id = ?1 AND status = 'queued' AND is_incoming = 0
+             WHERE thread_peer_id = ?1 AND LOWER(status) = 'queued' AND is_incoming = 0
              ORDER BY created_at ASC"
         )?;
 
@@ -300,6 +297,44 @@ impl Database {
             })
         })?;
 
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r?);
+        }
+        Ok(results)
+    }
+
+    /// Outgoing messages that were never delivered: "Queued" ones, plus ones stuck
+    /// on "Sending" since before `stuck_before_ms` (the app was closed mid-send).
+    pub fn get_undelivered_messages(&self, stuck_before_ms: i64) -> Result<Vec<ChatMessage>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, thread_peer_id, sender_id, sender_name, receiver_id, receiver_name, \
+                    content, status, created_at, is_incoming, is_read, quote, is_edited, is_deleted, reactions \
+             FROM messages \
+             WHERE is_incoming = 0 AND is_deleted = 0 \
+               AND (LOWER(status) = 'queued' OR (status LIKE 'Sending%' AND created_at < ?1)) \
+             ORDER BY created_at ASC"
+        )?;
+        let rows = stmt.query_map(params![stuck_before_ms], |row| {
+            Ok(ChatMessage {
+                id: row.get(0)?,
+                thread_peer_id: row.get(1)?,
+                sender_id: row.get(2)?,
+                sender_name: row.get(3)?,
+                receiver_id: row.get(4)?,
+                receiver_name: row.get(5)?,
+                content: row.get(6)?,
+                status: row.get(7)?,
+                created_at: row.get(8)?,
+                is_incoming: row.get::<_, i64>(9)? != 0,
+                is_read: row.get::<_, i64>(10)? != 0,
+                quote: row.get(11)?,
+                is_edited: row.get::<_, i64>(12)? != 0,
+                is_deleted: row.get::<_, i64>(13)? != 0,
+                reactions: row.get(14)?,
+            })
+        })?;
         let mut results = Vec::new();
         for r in rows {
             results.push(r?);

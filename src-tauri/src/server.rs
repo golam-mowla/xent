@@ -9,7 +9,7 @@ use crate::transfer::{
 use axum::{
     body::Bytes,
     extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -98,6 +98,28 @@ pub struct ChunkQuery {
     pub offset: u64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LocalSendFilesPayload {
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+pub struct PendingSendFilesState(pub std::sync::Mutex<Vec<String>>);
+
+pub struct LocalIpcTokenState(pub String);
+
+fn format_file_size_label(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
 pub struct ServerState {
     pub settings: AppSettings,
     pub cert: TlsCertificate,
@@ -164,6 +186,7 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
         .route("/api/files/pause/:transfer_id", post(file_pause_handler))
         .route("/api/files/resume/:transfer_id", post(file_resume_handler))
         .route("/api/files/cancel/:transfer_id", post(file_cancel_handler))
+        .route("/api/local/open-send-files", post(local_open_send_files_handler))
         .route("/api/message/typing", post(typing_handler))
         .route("/api/message/read", post(read_handler))
         .route("/api/message/edit", post(edit_handler))
@@ -363,6 +386,16 @@ async fn message_handler(
     if is_new {
         if let Some(ref handle) = state.app_handle {
             let _ = handle.emit("new_message", &chat_msg);
+            if state.live_settings().desktop_notifications {
+                let title = format!("New message from {}", chat_msg.sender_name);
+                let body = chat_msg.content.clone();
+                crate::os_integration::send_os_notification(title, body);
+            }
+            if let Some(window) = handle.get_webview_window("main") {
+                if !window.is_focused().unwrap_or(false) {
+                    let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+                }
+            }
         }
     }
 
@@ -560,6 +593,11 @@ async fn file_request_handler(
     // Favourites (or "accept everything") skip the permission prompt.
     let auto_accept = settings.auto_accept || state.is_favorite(&req.sender_id);
 
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
     let transfer_info = FileTransferInfo {
         transfer_id: req.transfer_id.clone(),
         peer_id: req.sender_id.clone(),
@@ -567,7 +605,7 @@ async fn file_request_handler(
         sender_name: req.sender_name.clone(),
         receiver_id: req.receiver_id.clone(),
         receiver_name: req.receiver_name.clone(),
-        file_name: safe_name,
+        file_name: safe_name.clone(),
         file_size: req.file_size,
         transferred_bytes: 0,
         speed_mbps: 0.0,
@@ -580,9 +618,24 @@ async fn file_request_handler(
         file_path: Some(dest_path.to_string_lossy().to_string()),
         peer_ip,
         peer_port,
+        created_at: now_ms,
     };
 
     state.transfer_mgr.add_transfer(transfer_info);
+
+    if let Some(ref handle) = state.app_handle {
+        if settings.desktop_notifications {
+            let verb = if auto_accept { "Receiving file" } else { "Incoming file offer" };
+            let title = format!("{} from {}", verb, req.sender_name);
+            let body = format!("{} ({})", safe_name, format_file_size_label(req.file_size));
+            crate::os_integration::send_os_notification(title, body);
+        }
+        if let Some(window) = handle.get_webview_window("main") {
+            if !window.is_focused().unwrap_or(false) {
+                let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+            }
+        }
+    }
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -654,6 +707,47 @@ async fn file_cancel_handler(
 ) -> Json<serde_json::Value> {
     state.transfer_mgr.cancel(&transfer_id);
     Json(serde_json::json!({ "success": true }))
+}
+
+async fn local_open_send_files_handler(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(payload): Json<LocalSendFilesPayload>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let handle = state
+        .app_handle
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Headless instance".to_string()))?;
+
+    let token_state = handle
+        .try_state::<Arc<LocalIpcTokenState>>()
+        .ok_or((StatusCode::UNAUTHORIZED, "Missing IPC token".to_string()))?;
+
+    let supplied = headers
+        .get("x-xent-local-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !crate::os_integration::constant_time_eq(supplied, &token_state.0) {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid IPC token".to_string()));
+    }
+
+    let expanded = crate::os_integration::expand_file_paths(payload.paths);
+    if !expanded.is_empty() {
+        if let Some(pending) = handle.try_state::<Arc<PendingSendFilesState>>() {
+            if let Ok(mut lock) = pending.0.lock() {
+                lock.extend(expanded.clone());
+            }
+        }
+        let _ = handle.emit("open_send_files", expanded);
+    }
+
+    if let Some(window) = handle.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+
+    Ok(Json(serde_json::json!({ "success": true })))
 }
 
 async fn ws_handler(

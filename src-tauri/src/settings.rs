@@ -22,6 +22,10 @@ fn default_status() -> String {
     "available".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub device_id: String,
@@ -55,6 +59,15 @@ pub struct AppSettings {
     /// Blocked devices: their messages and file offers are silently dropped.
     #[serde(default)]
     pub blocked_devices: Vec<String>,
+    /// Launch Xent automatically on OS startup (default instance only).
+    #[serde(default = "default_true")]
+    pub launch_on_startup: bool,
+    /// Register Windows Explorer Right-Click -> Send to -> Xent shortcut.
+    #[serde(default = "default_true")]
+    pub send_to_menu: bool,
+    /// Show OS toast notifications on incoming messages and files.
+    #[serde(default = "default_true")]
+    pub desktop_notifications: bool,
 }
 
 pub struct SettingsState {
@@ -141,6 +154,9 @@ impl SettingsState {
             favorite_devices: Vec::new(),
             device_nicknames: HashMap::new(),
             blocked_devices: Vec::new(),
+            launch_on_startup: true,
+            send_to_menu: true,
+            desktop_notifications: true,
         }
     }
 
@@ -326,6 +342,9 @@ mod tests {
         assert_eq!(settings.favorite_devices.len(), 0);
         assert_eq!(settings.device_nicknames.len(), 0);
         assert_eq!(settings.blocked_devices.len(), 0);
+        assert!(settings.launch_on_startup);
+        assert!(settings.send_to_menu);
+        assert!(settings.desktop_notifications);
     }
 
     fn temp_state(tag: &str) -> SettingsState {

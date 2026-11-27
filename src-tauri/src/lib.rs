@@ -2,6 +2,7 @@ pub mod cert;
 pub mod chat;
 pub mod db;
 pub mod discovery;
+pub mod os_integration;
 pub mod paths;
 pub mod server;
 pub mod settings;
@@ -230,12 +231,63 @@ fn update_settings(
     state.update_settings(settings)
 }
 
+#[tauri::command]
+fn consume_pending_send_files(
+    pending: State<'_, Arc<server::PendingSendFilesState>>,
+) -> Vec<String> {
+    if let Ok(mut lock) = pending.0.lock() {
+        let out = lock.clone();
+        lock.clear();
+        return out;
+    }
+    Vec::new()
+}
+
+#[tauri::command]
+fn set_launch_on_startup(
+    state: State<'_, Arc<SettingsState>>,
+    enabled: bool,
+) -> Result<AppSettings, String> {
+    let mut cfg = state.get_settings();
+    cfg.launch_on_startup = enabled;
+    let saved = state.update_settings(cfg)?;
+    if saved.instance_id == "default" {
+        os_integration::sync_startup_registration(enabled);
+    }
+    Ok(saved)
+}
+
+#[tauri::command]
+fn set_send_to_menu(
+    state: State<'_, Arc<SettingsState>>,
+    enabled: bool,
+) -> Result<AppSettings, String> {
+    let mut cfg = state.get_settings();
+    cfg.send_to_menu = enabled;
+    let saved = state.update_settings(cfg)?;
+    if saved.instance_id == "default" {
+        os_integration::sync_send_to_shortcut(enabled);
+    }
+    Ok(saved)
+}
+
+#[tauri::command]
+fn set_desktop_notifications(
+    state: State<'_, Arc<SettingsState>>,
+    enabled: bool,
+) -> Result<AppSettings, String> {
+    let mut cfg = state.get_settings();
+    cfg.desktop_notifications = enabled;
+    state.update_settings(cfg)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let args: Vec<String> = std::env::args().collect();
     let mut instance_override = None;
     let mut port_override = None;
+    let mut raw_paths: Vec<String> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -247,12 +299,31 @@ pub fn run() {
                 port_override = Some(p);
             }
             i += 1;
+        } else if !args[i].starts_with('-') {
+            raw_paths.push(args[i].clone());
         }
         i += 1;
     }
 
-    let settings_state = Arc::new(SettingsState::new(instance_override, port_override));
+    let settings_state = Arc::new(SettingsState::new(instance_override.clone(), port_override));
     let initial_settings = settings_state.get_settings();
+    let cli_files = os_integration::expand_file_paths(raw_paths);
+
+    // If launching the primary/default instance (e.g. from Explorer "Send to -> Xent" or desktop icon)
+    // while Xent is already running, hand off any files + focus the running window and exit cleanly.
+    if instance_override.is_none() && port_override.is_none() {
+        if os_integration::try_handoff_to_running_instance(initial_settings.port, &cli_files) {
+            return;
+        }
+    }
+
+    let ipc_token = if initial_settings.instance_id == "default" {
+        os_integration::load_or_create_ipc_token()
+    } else {
+        format!("inst-{}", initial_settings.instance_id)
+    };
+    let pending_send_files = Arc::new(server::PendingSendFilesState(std::sync::Mutex::new(cli_files)));
+    let local_ipc_token = Arc::new(server::LocalIpcTokenState(ipc_token));
 
     let cert = TlsCertificate::generate().expect("Failed to generate TLS certificate");
     let database = Arc::new(Database::init(&initial_settings.instance_id).expect("Failed to initialize database"));
@@ -265,9 +336,19 @@ pub fn run() {
         .manage(settings_state)
         .manage(cert)
         .manage(database)
+        .manage(pending_send_files)
+        .manage(local_ipc_token)
         .setup(move |app| {
             let handle = app.handle().clone();
             let mut current_settings = initial_settings.clone();
+            if current_settings.instance_id == "default" {
+                let startup_on = current_settings.launch_on_startup;
+                let sendto_on = current_settings.send_to_menu;
+                std::thread::spawn(move || {
+                    os_integration::sync_startup_registration(startup_on);
+                    os_integration::sync_send_to_shortcut(sendto_on);
+                });
+            }
             let cert_for_server = cert_clone.clone();
             let db_for_server = db_for_setup.clone();
             let settings_state_for_server = settings_state_for_setup.clone();
@@ -384,6 +465,10 @@ pub fn run() {
             rescan_network,
             update_alias,
             update_settings,
+            consume_pending_send_files,
+            set_launch_on_startup,
+            set_send_to_menu,
+            set_desktop_notifications,
             set_presence,
             get_network_diagnostics,
             add_peer_by_ip,

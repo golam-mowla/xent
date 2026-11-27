@@ -1,6 +1,6 @@
 [package]
 name = "xent"
-version = "0.2.6"
+version = "0.2.7"
 description = "Xent - Fast, lightweight LAN messenger and file sharing"
 authors = ["Golam Mowla"]
 license = "MIT"

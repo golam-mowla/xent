@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Notify, Semaphore};
 use uuid::Uuid;
 
@@ -38,6 +38,13 @@ pub enum TransferStatus {
     Failed(String),
 }
 
+fn default_transfer_created_at() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileTransferInfo {
     pub transfer_id: String,
@@ -58,6 +65,9 @@ pub struct FileTransferInfo {
     pub peer_ip: String,
     #[serde(default)]
     pub peer_port: u16,
+    /// Creation timestamp (epoch ms) so chat timeline interleaves files and messages accurately.
+    #[serde(default = "default_transfer_created_at")]
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,7 +202,7 @@ impl TransferManager {
                 file_name: t.file_name.clone(),
                 file_size: t.file_size,
                 status: status_str.to_string(),
-                created_at: now_ms,
+                created_at: if t.created_at > 0 { t.created_at } else { now_ms },
                 local_path: t.file_path.clone(),
                 is_incoming: t.is_incoming,
             };
@@ -461,6 +471,20 @@ impl TransferManager {
         if just_completed {
             self.maybe_record_history(&updated);
             self.cleanup_runtime_state(transfer_id);
+            if updated.is_incoming {
+                if let Some(ref handle) = self.app_handle {
+                    let enabled = handle
+                        .try_state::<Arc<SettingsState>>()
+                        .map(|s| s.get_settings().desktop_notifications)
+                        .unwrap_or(true);
+                    if enabled {
+                        crate::os_integration::send_os_notification(
+                            format!("File received from {}", updated.sender_name),
+                            updated.file_name.clone(),
+                        );
+                    }
+                }
+            }
         }
 
         Ok(updated)
@@ -533,6 +557,11 @@ pub async fn send_file_request_core(
 
     let transfer_id = Uuid::new_v4().to_string();
 
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
     let transfer_info = FileTransferInfo {
         transfer_id: transfer_id.clone(),
         peer_id: peer.device_id.clone(),
@@ -549,6 +578,7 @@ pub async fn send_file_request_core(
         file_path: Some(file_path),
         peer_ip: peer.ip.clone(),
         peer_port: peer.port,
+        created_at: now_ms,
     };
 
     transfer_mgr.add_transfer(transfer_info.clone());
@@ -1161,6 +1191,7 @@ mod tests {
             file_path: Some(path.into()),
             peer_ip: "127.0.0.1".into(),
             peer_port: 1,
+            created_at: 1000,
         }
     }
 

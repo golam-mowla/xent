@@ -1027,7 +1027,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
       <div class="brand-wrapper" id="brand-logo-btn" title="About Xent">
         <img src="./app-icon.png" class="brand-logo" alt="Xent">
         <span class="brand-title">Xent</span>
-        <span class="brand-version" id="brand-version-tag">v0.2.6</span>
+        <span class="brand-version" id="brand-version-tag">v0.2.7</span>
       </div>
       <button class="btn-icon" id="btn-collapse-sidebar" title="Collapse sidebar">
         <i class="ti ti-layout-sidebar-left-collapse"></i>
@@ -1331,7 +1331,25 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
         <div class="form-group">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="chk-sound-notifications" style="cursor:pointer">
-            <span style="font-size:12.5px">Play sound notifications for incoming messages & files</span>
+            <span style="font-size:12.5px">Play sound notifications for incoming messages &amp; files</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="chk-desktop-notifications" style="cursor:pointer">
+            <span style="font-size:12.5px">Show desktop notifications when a message or file arrives</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="chk-launch-startup" style="cursor:pointer">
+            <span style="font-size:12.5px">Launch Xent automatically on system startup</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="chk-send-to-menu" style="cursor:pointer">
+            <span style="font-size:12.5px">Show Xent in Windows right-click &rarr; Send to menu</span>
           </label>
         </div>
         <div style="display:flex;justify-content:flex-end">
@@ -1395,7 +1413,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
       <div class="settings-pane" id="pane-about">
         <div style="text-align:center;padding:10px 0">
           <img src="./app-icon.png" width="64" height="64" style="border-radius:14px;box-shadow:var(--shadow-md);display:inline-block" alt="Xent">
-          <h2 style="font-size:18px;font-weight:700;margin-top:8px">Xent <span id="about-ver-text" style="font-size:12px;font-weight:600;color:var(--text-secondary)">v0.2.6</span></h2>
+          <h2 style="font-size:18px;font-weight:700;margin-top:8px">Xent <span id="about-ver-text" style="font-size:12px;font-weight:600;color:var(--text-secondary)">v0.2.7</span></h2>
           <p style="font-size:12px;color:var(--text-secondary)">ChatGPT-inspired minimal LAN messenger & file transfer.</p>
         </div>
 
@@ -2300,9 +2318,26 @@ function renderChatThread() {
     return;
   }
 
+  var mergedTimeline = chatTimelineHistory.slice();
+  var shownTransferIds = {};
+  mergedTimeline.forEach(function(it) { if (it.kind === 'transfer') shownTransferIds[it.id] = true; });
+  Object.values(activeTransfers).forEach(function(t) {
+    if (t.peer_id === activePeerId && !shownTransferIds[t.transfer_id]) {
+      mergedTimeline.push({
+        kind: 'live_transfer',
+        id: t.transfer_id,
+        created_at: t.created_at || Date.now(),
+        transfer: t
+      });
+    }
+  });
+  mergedTimeline.sort(function(a, b) {
+    return (a.created_at || 0) - (b.created_at || 0);
+  });
+
   var lastDateStr = '';
-  chatTimelineHistory.forEach(function(item) {
-    var dStr = formatDateSeparator(item.created_at);
+  mergedTimeline.forEach(function(item) {
+    var dStr = formatDateSeparator(item.created_at || Date.now());
     if (dStr !== lastDateStr) {
       lastDateStr = dStr;
       var sep = document.createElement('div');
@@ -2313,6 +2348,8 @@ function renderChatThread() {
 
     if (item.kind === 'message') {
       messagesStream.appendChild(createMessageElement(item));
+    } else if (item.kind === 'live_transfer') {
+      messagesStream.appendChild(createFileCardElement(item.transfer));
     } else if (item.kind === 'transfer') {
       var incomingFlag = (typeof item.is_incoming === 'boolean')
         ? item.is_incoming
@@ -2328,17 +2365,10 @@ function renderChatThread() {
         speed_mbps: 0,
         status: recordStatusToCardStatus(item.status),
         is_incoming: incomingFlag,
-        file_path: item.local_path
+        file_path: item.local_path,
+        created_at: item.created_at
       };
       messagesStream.appendChild(createFileCardElement(mock));
-    }
-  });
-
-  var shownIds = {};
-  chatTimelineHistory.forEach(function(it) { if (it.kind === 'transfer') shownIds[it.id] = true; });
-  Object.values(activeTransfers).forEach(function(t) {
-    if (t.peer_id === activePeerId && !shownIds[t.transfer_id]) {
-      messagesStream.appendChild(createFileCardElement(t));
     }
   });
 
@@ -3214,7 +3244,7 @@ function renderTransfersManagerNow() {
         receiver_name: t.receiver_name,
         status: t.status,
         file_path: t.file_path,
-        created_at: Date.now()
+        created_at: t.created_at || Date.now()
       });
     });
 
@@ -3452,12 +3482,45 @@ var settingsPort = document.getElementById('settings-port');
 var settingsDownloadDir = document.getElementById('settings-download-dir');
 var chkAutoAcceptAll = document.getElementById('chk-auto-accept-all');
 var chkSoundNotif = document.getElementById('chk-sound-notifications');
+var chkDesktopNotif = document.getElementById('chk-desktop-notifications');
+var chkLaunchStartup = document.getElementById('chk-launch-startup');
+var chkSendToMenu = document.getElementById('chk-send-to-menu');
 
 if (chkSoundNotif) {
   chkSoundNotif.checked = soundEnabled;
   chkSoundNotif.addEventListener('change', function() {
     soundEnabled = chkSoundNotif.checked;
     try { localStorage.setItem('soundEnabled', soundEnabled ? '1' : '0'); } catch(_) {}
+  });
+}
+
+if (chkDesktopNotif) {
+  chkDesktopNotif.addEventListener('change', function() {
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('set_desktop_notifications', { enabled: chkDesktopNotif.checked })
+        .then(function(up){ mySettings = up; showToast(chkDesktopNotif.checked ? 'Desktop notifications enabled' : 'Desktop notifications disabled'); })
+        .catch(function(e){ showToast('Error: ' + e); });
+    }
+  });
+}
+
+if (chkLaunchStartup) {
+  chkLaunchStartup.addEventListener('change', function() {
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('set_launch_on_startup', { enabled: chkLaunchStartup.checked })
+        .then(function(up){ mySettings = up; showToast(chkLaunchStartup.checked ? 'Startup launch enabled' : 'Startup launch disabled'); })
+        .catch(function(e){ showToast('Error: ' + e); });
+    }
+  });
+}
+
+if (chkSendToMenu) {
+  chkSendToMenu.addEventListener('change', function() {
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('set_send_to_menu', { enabled: chkSendToMenu.checked })
+        .then(function(up){ mySettings = up; showToast(chkSendToMenu.checked ? 'Added to Windows Send to menu' : 'Removed from Send to menu'); })
+        .catch(function(e){ showToast('Error: ' + e); });
+    }
   });
 }
 
@@ -3468,6 +3531,9 @@ document.getElementById('btn-open-settings').addEventListener('click', function(
     if (settingsPort) settingsPort.value = mySettings.port ? String(mySettings.port) : '53317';
     if (settingsDownloadDir) settingsDownloadDir.value = mySettings.download_dir || '';
     if (chkAutoAcceptAll) chkAutoAcceptAll.checked = !!mySettings.auto_accept;
+    if (chkDesktopNotif) chkDesktopNotif.checked = mySettings.desktop_notifications !== false;
+    if (chkLaunchStartup) chkLaunchStartup.checked = mySettings.launch_on_startup !== false;
+    if (chkSendToMenu) chkSendToMenu.checked = mySettings.send_to_menu !== false;
   }
   applyTheme(currentTheme);
   renderSettingsDevicesTab();
@@ -3834,7 +3900,8 @@ if (window.__TAURI__ && window.__TAURI__.core) {
     window.__TAURI__.core.invoke('get_device_info').catch(function(){ return null; }),
     window.__TAURI__.core.invoke('get_known_peers').catch(function(){ return []; }),
     window.__TAURI__.core.invoke('get_nearby_devices').catch(function(){ return []; }),
-    window.__TAURI__.core.invoke('get_unread_badges').catch(function(){ return {}; })
+    window.__TAURI__.core.invoke('get_unread_badges').catch(function(){ return {}; }),
+    window.__TAURI__.core.invoke('consume_pending_send_files').catch(function(){ return []; })
   ]).then(function(results) {
     if (results[0]) updateMyPresenceUI(results[0]);
     (results[1] || []).forEach(function(kp){ knownPeersMap[kp.device_id] = kp; });
@@ -3843,6 +3910,14 @@ if (window.__TAURI__ && window.__TAURI__.core) {
     renderSidebarSublist();
     var all = combinedPeers();
     if (!activePeerId && all.length > 0) selectPeer(all[0].device_id);
+
+    var initialSendPaths = results[4] || [];
+    if (initialSendPaths.length > 0) {
+      switchView('view-send-files');
+      populateSendFilesRecipients();
+      stagePaths(initialSendPaths);
+      showToast(initialSendPaths.length + ' file(s) ready to send');
+    }
   });
 
   if (window.__TAURI__.event) {
@@ -3881,7 +3956,11 @@ if (window.__TAURI__ && window.__TAURI__.core) {
           chatTimelineHistory.push(msg);
           scheduleRender(true);
         }
-        window.__TAURI__.core.invoke('mark_thread_read', { peerId: activePeerId }).catch(console.error);
+        if (currentView !== 'view-messages') {
+          showToast('Message from ' + nameById(msg.thread_peer_id, msg.sender_name));
+        } else {
+          window.__TAURI__.core.invoke('mark_thread_read', { peerId: activePeerId }).catch(console.error);
+        }
       } else {
         unreadCounts[msg.thread_peer_id] = (unreadCounts[msg.thread_peer_id] || 0) + 1;
         renderSidebarSublist();
@@ -3962,11 +4041,24 @@ if (window.__TAURI__ && window.__TAURI__.core) {
       scheduleRender(false);
     });
 
+    window.__TAURI__.event.listen('open_send_files', function(ev) {
+      var paths = ev.payload || [];
+      if (paths.length > 0) {
+        switchView('view-send-files');
+        populateSendFilesRecipients();
+        stagePaths(paths);
+        showToast(paths.length + ' file(s) ready to send');
+      }
+    });
+
     window.__TAURI__.event.listen('file_transfer_progress', function(ev) {
       var info = ev.payload;
       if (!info) return;
       var prev = activeTransfers[info.transfer_id];
       var isNew = !prev;
+      if (!info.created_at) {
+        info.created_at = (prev && prev.created_at) ? prev.created_at : Date.now();
+      }
       activeTransfers[info.transfer_id] = info;
       var stateChanged = isNew || JSON.stringify(prev.status) !== JSON.stringify(info.status);
 
@@ -3975,6 +4067,10 @@ if (window.__TAURI__ && window.__TAURI__.core) {
         if (info.peer_id !== activePeerId || currentView !== 'view-messages') {
           showOfferBanner(info);
         }
+      }
+      if (stateChanged && info.is_incoming && info.status === 'Completed') {
+        playNotificationChime();
+        showToast('Received ' + info.file_name + ' from ' + nameById(info.peer_id, info.sender_name));
       }
       if (stateChanged && info.status !== 'Pending') {
         hideOfferBannerIfMatches(info.transfer_id);

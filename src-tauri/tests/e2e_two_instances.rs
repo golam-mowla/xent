@@ -284,6 +284,47 @@ async fn e2e_two_instances_messaging_and_file_transfers() {
     assert!(!a_hist[0].is_incoming, "Sender DB must record is_incoming=false");
     assert!(b_hist[0].is_incoming, "Receiver DB must record is_incoming=true");
 
+    // 3b. Message sent AFTER file transfer must appear AFTER file transfer in DB timeline
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    let after_file_ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let after_msg_id = Uuid::new_v4().to_string();
+    let after_msg = ChatMessage {
+        id: after_msg_id.clone(),
+        thread_peer_id: node_b.device_id.clone(),
+        sender_id: node_a.device_id.clone(),
+        sender_name: node_a.alias.clone(),
+        receiver_id: node_b.device_id.clone(),
+        receiver_name: node_b.alias.clone(),
+        content: "After file SMS".to_string(),
+        status: "Delivered".to_string(),
+        created_at: after_file_ts,
+        is_incoming: false,
+        is_read: true,
+        quote: None,
+        is_edited: false,
+        is_deleted: false,
+        reactions: None,
+    };
+    node_a.db.save_message(&after_msg).unwrap();
+    let timeline = node_a.db.get_timeline(&node_b.device_id, 50).unwrap();
+    let file_pos = timeline
+        .iter()
+        .position(|item| matches!(item, xent_lib::db::TimelineItem::Transfer(t) if t.id == info.transfer_id))
+        .expect("Timeline must contain transfer");
+    let after_pos = timeline
+        .iter()
+        .position(|item| matches!(item, xent_lib::db::TimelineItem::Message(m) if m.id == after_msg_id))
+        .expect("Timeline must contain message sent after file");
+    assert!(
+        after_pos > file_pos,
+        "Message sent after file must appear AFTER file in timeline (file_pos={}, after_pos={})",
+        file_pos,
+        after_pos
+    );
+
     // 4. Duplicate filename collision + Auto-accept Favorite
     node_b.settings.toggle_favorite(node_a.device_id.clone()).unwrap();
     let src_dup = node_a.dir.join("dup_doc.txt");

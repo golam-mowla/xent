@@ -177,6 +177,27 @@ pub fn sync_startup_registration(enabled: bool) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn encode_ps_utf16_b64(script: &str) -> String {
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut bytes = Vec::with_capacity(script.len() * 2);
+    for unit in script.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(B64[((n >> 18) & 0x3F) as usize] as char);
+        out.push(B64[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 { B64[((n >> 6) & 0x3F) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { B64[(n & 0x3F) as usize] as char } else { '=' });
+    }
+    out
+}
+
 /// Create or remove Windows Explorer right-click "Send to -> Xent" shortcut (`SendTo\Xent.lnk`).
 pub fn sync_send_to_shortcut(enabled: bool) {
     #[cfg(target_os = "windows")]
@@ -205,7 +226,7 @@ pub fn sync_send_to_shortcut(enabled: bool) {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        // Values are passed via environment variables, never string-interpolated into PowerShell source.
+        // Values are passed via environment variables + UTF-16LE EncodedCommand (immune to quote stripping).
         let ps = r#"
 $ws = New-Object -ComObject WScript.Shell
 $s = $ws.CreateShortcut($env:XENT_LNK_PATH)
@@ -215,8 +236,16 @@ $s.IconLocation = "$($env:XENT_EXE_PATH),0"
 $s.Description = "Send files with Xent"
 $s.Save()
 "#;
+        let encoded = encode_ps_utf16_b64(ps);
         let _ = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-EncodedCommand",
+                &encoded,
+            ])
             .env("XENT_LNK_PATH", sendto_lnk.to_string_lossy().as_ref())
             .env("XENT_EXE_PATH", exe.to_string_lossy().as_ref())
             .env("XENT_WORK_DIR", &work_dir)
@@ -237,22 +266,28 @@ pub fn send_os_notification(title: String, body: String) {
         let clean_title: String = title.chars().take(100).collect();
         let clean_body: String = body.chars().take(240).collect();
         let ps = r#"
-try {
-  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-  [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-  $t = [System.Security.SecurityElement]::Escape($env:XENT_NTITLE)
-  $b = [System.Security.SecurityElement]::Escape($env:XENT_NBODY)
-  $xmlStr = "<toast><visual><binding template='ToastGeneric'><text>$t</text><text>$b</text></binding></visual></toast>"
-  $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
-  $doc.LoadXml($xmlStr)
-  $toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
-  $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
-  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
-} catch {}
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$t = [System.Security.SecurityElement]::Escape($env:XENT_NTITLE)
+$b = [System.Security.SecurityElement]::Escape($env:XENT_NBODY)
+$xmlStr = "<toast><visual><binding template='ToastGeneric'><text>$t</text><text>$b</text></binding></visual></toast>"
+$doc = New-Object Windows.Data.Xml.Dom.XmlDocument
+$doc.LoadXml($xmlStr)
+$toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
+$appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
 "#;
+        let encoded = encode_ps_utf16_b64(ps);
         std::thread::spawn(move || {
             let _ = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps])
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-EncodedCommand",
+                    &encoded,
+                ])
                 .env("XENT_NTITLE", clean_title)
                 .env("XENT_NBODY", clean_body)
                 .creation_flags(CREATE_NO_WINDOW)
@@ -302,6 +337,15 @@ mod tests {
         assert!(constant_time_eq("abc123", "abc123"));
         assert!(!constant_time_eq("abc123", "abc124"));
         assert!(!constant_time_eq("abc", "abcd"));
+    }
+
+    #[test]
+    fn encode_ps_utf16_b64_matches_powershell_format() {
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(encode_ps_utf16_b64("a"), "YQA=");
+            assert_eq!(encode_ps_utf16_b64("hi"), "aABpAA==");
+        }
     }
 
     #[test]

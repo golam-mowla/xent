@@ -66,7 +66,6 @@ impl SettingsState {
     pub fn new(instance_override: Option<String>, port_override: Option<u16>) -> Self {
         let instance = instance_override.unwrap_or_else(|| "default".to_string());
         let config_dir = crate::paths::data_dir();
-
         let _ = fs::create_dir_all(&config_dir);
         let config_file_name = if instance == "default" {
             "settings.json".to_string()
@@ -74,12 +73,23 @@ impl SettingsState {
             format!("settings_{}.json", instance)
         };
         let config_path = config_dir.join(config_file_name);
-
         let default_download_dir = crate::paths::default_download_dir()
             .to_string_lossy()
             .to_string();
-
         let default_port = port_override.unwrap_or(53317);
+        Self::open_at_path(config_path, default_download_dir, port_override, default_port, instance)
+    }
+
+    pub fn open_at_path(
+        config_path: PathBuf,
+        default_download_dir: String,
+        port_override: Option<u16>,
+        default_port: u16,
+        instance: String,
+    ) -> Self {
+        if let Some(parent) = config_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
 
         let mut settings = if config_path.exists() {
             if let Ok(data) = fs::read_to_string(&config_path) {

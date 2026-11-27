@@ -1,10 +1,11 @@
+use crate::db::{Database, KnownPeer};
 use crate::settings::{AppSettings, SettingsState};
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use tokio::net::UdpSocket;
 
@@ -13,6 +14,19 @@ pub const MULTICAST_PORT: u16 = 53317;
 
 fn default_status() -> String {
     "available".to_string()
+}
+
+fn shared_probe_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .timeout(Duration::from_millis(1200))
+                .build()
+                .expect("Failed to build discovery HTTP client")
+        })
+        .clone()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +42,8 @@ pub struct DiscoveryPacket {
     pub status: String,
     #[serde(default)]
     pub status_message: String,
+    #[serde(default)]
+    pub os: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +57,10 @@ pub struct Peer {
     pub last_seen: u64,
     pub status: String,
     pub status_message: String,
+    #[serde(default)]
+    pub os: String,
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +88,7 @@ pub struct DiscoveryManager {
     fingerprint: String,
     app_handle: Option<AppHandle>,
     settings_state: Option<Arc<SettingsState>>,
+    db: Option<Arc<Database>>,
     udp_bound: Arc<RwLock<bool>>,
     last_packet_time: Arc<RwLock<Option<u64>>>,
 }
@@ -78,6 +99,7 @@ impl DiscoveryManager {
         fingerprint: String,
         app_handle: Option<AppHandle>,
         settings_state: Option<Arc<SettingsState>>,
+        db: Option<Arc<Database>>,
     ) -> Self {
         let presence = Arc::new(RwLock::new(LocalPresence {
             alias: settings.alias.clone(),
@@ -93,6 +115,7 @@ impl DiscoveryManager {
             fingerprint,
             app_handle,
             settings_state,
+            db,
             udp_bound: Arc::new(RwLock::new(false)),
             last_packet_time: Arc::new(RwLock::new(None)),
         }
@@ -101,6 +124,21 @@ impl DiscoveryManager {
     pub fn get_peers(&self) -> Vec<Peer> {
         let lock = self.peers.read().unwrap();
         lock.values().cloned().collect()
+    }
+
+    pub fn my_device_info(&self) -> crate::server::DeviceInfoResponse {
+        let pres = self.presence.read().unwrap().clone();
+        crate::server::DeviceInfoResponse {
+            device_id: self.settings.device_id.clone(),
+            alias: pres.alias,
+            device_type: self.settings.device_type.clone(),
+            port: self.settings.port,
+            fingerprint: self.fingerprint.clone(),
+            protocol_version: 1,
+            status: pres.status,
+            status_message: pres.status_message,
+            os: std::env::consts::OS.to_string(),
+        }
     }
 
     pub fn update_alias(&self, new_alias: String) {
@@ -120,6 +158,7 @@ impl DiscoveryManager {
             self.send_bye().await;
         } else {
             self.send_multicast_announce("announce").await;
+            self.push_hello_to_known_peers().await;
         }
     }
 
@@ -157,9 +196,86 @@ impl DiscoveryManager {
         });
     }
 
-    pub async fn probe_peer(client: &reqwest::Client, target_ip: &str, target_port: u16, my_id: &str) -> Option<Peer> {
+    /// Insert or update a discovered peer, persist it in SQLite, and emit UI updates if changed.
+    pub fn register_or_update_peer(&self, peer: Peer) -> bool {
+        if peer.device_id == self.settings.device_id {
+            return false;
+        }
+        let is_blocked = self
+            .settings_state
+            .as_ref()
+            .map_or(false, |st| st.is_blocked(&peer.device_id));
+        if is_blocked {
+            return false;
+        }
+
+        if let Some(ref db) = self.db {
+            let _ = db.upsert_peer(&KnownPeer {
+                device_id: peer.device_id.clone(),
+                alias: peer.alias.clone(),
+                device_type: peer.device_type.clone(),
+                os: peer.os.clone(),
+                ip: peer.ip.clone(),
+                port: peer.port,
+                fingerprint: peer.fingerprint.clone(),
+                last_seen: peer.last_seen,
+            });
+        }
+
+        let mut changed = false;
+        {
+            let mut lock = self.peers.write().unwrap();
+            if let Some(existing) = lock.get_mut(&peer.device_id) {
+                existing.last_seen = peer.last_seen;
+                if peer.latency_ms.is_some() && existing.latency_ms != peer.latency_ms {
+                    existing.latency_ms = peer.latency_ms;
+                    changed = true;
+                }
+                if existing.alias != peer.alias
+                    || existing.ip != peer.ip
+                    || existing.port != peer.port
+                    || existing.fingerprint != peer.fingerprint
+                    || existing.status != peer.status
+                    || existing.status_message != peer.status_message
+                    || (!peer.os.is_empty() && existing.os != peer.os)
+                {
+                    existing.alias = peer.alias;
+                    existing.ip = peer.ip;
+                    existing.port = peer.port;
+                    existing.fingerprint = peer.fingerprint;
+                    existing.status = peer.status;
+                    existing.status_message = peer.status_message;
+                    if !peer.os.is_empty() {
+                        existing.os = peer.os;
+                    }
+                    changed = true;
+                }
+            } else {
+                println!(
+                    "[Discovery] Discovered new peer: {} ({}) at {}:{}",
+                    peer.alias, peer.device_id, peer.ip, peer.port
+                );
+                lock.insert(peer.device_id.clone(), peer);
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.emit_peers_changed();
+        }
+        changed
+    }
+
+    pub async fn probe_peer(
+        client: &reqwest::Client,
+        target_ip: &str,
+        target_port: u16,
+        my_id: &str,
+    ) -> Option<Peer> {
+        let start = Instant::now();
         let url = format!("https://{}:{}/api/info", target_ip, target_port);
         let resp = client.get(&url).send().await.ok()?;
+        let rtt = start.elapsed().as_millis().max(1) as u64;
         if resp.status().is_success() {
             let info = resp.json::<crate::server::DeviceInfoResponse>().await.ok()?;
             if info.device_id != my_id {
@@ -171,12 +287,99 @@ impl DiscoveryManager {
                     port: info.port,
                     fingerprint: info.fingerprint,
                     last_seen: Self::now_secs(),
-                    status: if info.status.is_empty() { "available".to_string() } else { info.status },
+                    status: if info.status.is_empty() {
+                        "available".to_string()
+                    } else {
+                        info.status
+                    },
                     status_message: info.status_message,
+                    os: info.os,
+                    latency_ms: Some(rtt),
                 });
             }
         }
         None
+    }
+
+    /// Push an HTTPS hello to a specific peer so both sides discover each other immediately
+    /// even if UDP multicast/broadcast packets are asymmetric (e.g., two instances on Windows).
+    pub async fn send_hello(&self, target_ip: &str, target_port: u16) {
+        let info = self.my_device_info();
+        if info.status == "offline" {
+            return;
+        }
+        let client = shared_probe_client();
+        let url = format!("https://{}:{}/api/discovery/hello", target_ip, target_port);
+        let start = Instant::now();
+        if let Ok(resp) = client.post(&url).json(&info).send().await {
+            let rtt = start.elapsed().as_millis().max(1) as u64;
+            if resp.status().is_success() {
+                if let Ok(remote_info) = resp.json::<crate::server::DeviceInfoResponse>().await {
+                    if remote_info.device_id != self.settings.device_id {
+                        self.register_or_update_peer(Peer {
+                            device_id: remote_info.device_id,
+                            alias: remote_info.alias,
+                            device_type: remote_info.device_type,
+                            ip: target_ip.to_string(),
+                            port: remote_info.port,
+                            fingerprint: remote_info.fingerprint,
+                            last_seen: Self::now_secs(),
+                            status: if remote_info.status.is_empty() {
+                                "available".to_string()
+                            } else {
+                                remote_info.status
+                            },
+                            status_message: remote_info.status_message,
+                            os: remote_info.os,
+                            latency_ms: Some(rtt),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    async fn push_hello_to_known_peers(&self) {
+        let peers = self.get_peers();
+        for p in peers {
+            self.send_hello(&p.ip, p.port).await;
+        }
+    }
+
+    /// Trigger an immediate rescan across multicast, loopback local instances, and manual peers.
+    pub async fn rescan(&self) {
+        self.send_multicast_announce("announce").await;
+        self.probe_loopback_instances().await;
+        let client = shared_probe_client();
+        if let Some(ref st) = self.settings_state {
+            for target in st.get_settings().manual_peers {
+                let parts: Vec<&str> = target.split(':').collect();
+                let ip = parts[0];
+                let port = parts.get(1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(53317);
+                if let Some(peer) = Self::probe_peer(&client, ip, port, &self.settings.device_id).await {
+                    self.register_or_update_peer(peer);
+                    self.send_hello(ip, port).await;
+                }
+            }
+        }
+    }
+
+    /// Probe common Xent ports on 127.0.0.1 so two instances on the same PC always discover
+    /// each other even when Windows SO_REUSEADDR hides UDP packets from one of them.
+    async fn probe_loopback_instances(&self) {
+        let client = shared_probe_client();
+        let my_port = self.settings.port;
+        let my_id = self.settings.device_id.clone();
+        let ports = [53317u16, 53318, 53319, 53320, 53321, 53325];
+        for port in ports {
+            if port == my_port {
+                continue;
+            }
+            if let Some(peer) = Self::probe_peer(&client, "127.0.0.1", port, &my_id).await {
+                self.register_or_update_peer(peer);
+                self.send_hello("127.0.0.1", port).await;
+            }
+        }
     }
 
     pub async fn add_peer_by_ip(&self, target: String) -> Result<Peer, String> {
@@ -188,21 +391,14 @@ impl DiscoveryManager {
             53317
         };
 
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_millis(1500))
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = shared_probe_client();
 
         if let Some(peer) = Self::probe_peer(&client, ip, port, &self.settings.device_id).await {
-            {
-                let mut lock = self.peers.write().unwrap();
-                lock.insert(peer.device_id.clone(), peer.clone());
-            }
+            self.register_or_update_peer(peer.clone());
+            self.send_hello(ip, port).await;
             if let Some(ref st) = self.settings_state {
                 let _ = st.add_manual_peer(format!("{}:{}", ip, port));
             }
-            self.emit_peers_changed();
             Ok(peer)
         } else {
             Err(format!("Could not connect to Xent device at {}:{}", ip, port))
@@ -223,7 +419,7 @@ impl DiscoveryManager {
         let exe_path = std::env::current_exe()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "xent.exe".to_string());
-        
+
         let firewall_cmd = format!(
             "netsh advfirewall firewall add rule name=\"Xent\" dir=in action=allow program=\"{}\" enable=yes profile=any && netsh advfirewall firewall add rule name=\"Xent UDP\" dir=in action=allow protocol=UDP localport=53317 enable=yes profile=any",
             exe_path
@@ -240,7 +436,11 @@ impl DiscoveryManager {
     }
 
     async fn run_subnet_scanner(self: Arc<Self>) {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Quick initial check for co-located instances on loopback
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        self.probe_loopback_instances().await;
+
+        tokio::time::sleep(Duration::from_secs(4)).await;
         let client = match reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .timeout(Duration::from_millis(400))
@@ -253,6 +453,9 @@ impl DiscoveryManager {
         let mut interval = tokio::time::interval(Duration::from_secs(15));
         loop {
             interval.tick().await;
+
+            // Always probe local loopback ports periodically in case another instance started
+            self.probe_loopback_instances().await;
 
             if !self.peers.read().unwrap().is_empty() {
                 continue;
@@ -275,7 +478,13 @@ impl DiscoveryManager {
                         continue;
                     }
 
-                    for port in [my_port, 53317] {
+                    let ports_to_probe: Vec<u16> = if my_port == 53317 {
+                        vec![53317]
+                    } else {
+                        vec![my_port, 53317]
+                    };
+
+                    for port in ports_to_probe {
                         let permit = match sem.clone().acquire_owned().await {
                             Ok(p) => p,
                             Err(_) => break,
@@ -288,13 +497,8 @@ impl DiscoveryManager {
                         handles.push(tokio::spawn(async move {
                             let _permit = permit;
                             if let Some(peer) = Self::probe_peer(&c, &ip_clone, port, &id_clone).await {
-                                let mut lock = mgr.peers.write().unwrap();
-                                let is_new = !lock.contains_key(&peer.device_id);
-                                lock.insert(peer.device_id.clone(), peer);
-                                drop(lock);
-                                if is_new {
-                                    mgr.emit_peers_changed();
-                                }
+                                mgr.register_or_update_peer(peer);
+                                mgr.send_hello(&ip_clone, port).await;
                             }
                         }));
                     }
@@ -312,14 +516,7 @@ impl DiscoveryManager {
     }
 
     async fn run_manual_peers_prober(self: Arc<Self>) {
-        let client = match reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_millis(800))
-            .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+        let client = shared_probe_client();
 
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         loop {
@@ -335,12 +532,8 @@ impl DiscoveryManager {
                         53317
                     };
                     if let Some(peer) = Self::probe_peer(&client, ip, port, &self.settings.device_id).await {
-                        let mut lock = self.peers.write().unwrap();
-                        let is_new = !lock.contains_key(&peer.device_id);
-                        lock.insert(peer.device_id.clone(), peer);
-                        drop(lock);
-                        if is_new {
-                            self.emit_peers_changed();
+                        if self.register_or_update_peer(peer) {
+                            self.send_hello(ip, port).await;
                         }
                     }
                 }
@@ -361,7 +554,6 @@ impl DiscoveryManager {
             }
         }
     }
-
 
     /// All usable IPv4 addresses of this machine (one per network adapter).
     fn local_v4_addrs() -> Vec<Ipv4Addr> {
@@ -428,7 +620,7 @@ impl DiscoveryManager {
         }
     }
 
-    async fn run_listener(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn run_listener(self: &Arc<Self>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
         socket.set_reuse_address(true)?;
         #[cfg(unix)]
@@ -455,7 +647,6 @@ impl DiscoveryManager {
                     *self.last_packet_time.write().unwrap() = Some(Self::now_secs());
                     if let Ok(packet) = serde_json::from_slice::<DiscoveryPacket>(&buf[..len]) {
                         if packet.device_id == self.settings.device_id {
-                            // Ignore self announcements
                             continue;
                         }
 
@@ -494,47 +685,20 @@ impl DiscoveryManager {
                                 device_id: packet.device_id.clone(),
                                 alias: packet.alias.clone(),
                                 device_type: packet.device_type.clone(),
-                                ip,
+                                ip: ip.clone(),
                                 port: packet.port,
                                 fingerprint: packet.fingerprint.clone(),
                                 last_seen: now,
                                 status: peer_status,
                                 status_message: packet.status_message.clone(),
+                                os: packet.os.clone(),
+                                latency_ms: None,
                             };
 
-                            let mut changed = false;
-                            {
-                                let mut lock = self.peers.write().unwrap();
-                                if let Some(existing) = lock.get_mut(&packet.device_id) {
-                                    existing.last_seen = now;
-                                    if existing.alias != peer.alias
-                                        || existing.port != peer.port
-                                        || existing.fingerprint != peer.fingerprint
-                                        || existing.status != peer.status
-                                        || existing.status_message != peer.status_message
-                                    {
-                                        existing.alias = peer.alias;
-                                        existing.port = peer.port;
-                                        existing.fingerprint = peer.fingerprint;
-                                        existing.status = peer.status;
-                                        existing.status_message = peer.status_message;
-                                        changed = true;
-                                    }
-                                } else {
-                                    println!(
-                                        "[Discovery] Discovered new peer: {} ({}) at {}:{}",
-                                        peer.alias, peer.device_id, peer.ip, peer.port
-                                    );
-                                    lock.insert(packet.device_id.clone(), peer);
-                                    changed = true;
-                                }
-                            }
+                            let is_new_or_changed = self.register_or_update_peer(peer);
 
-                            if changed {
-                                self.emit_peers_changed();
-                            }
-
-                            // If this was an announce packet, send a reply back so they know us immediately
+                            // Reply via both multicast/broadcast AND direct HTTPS hello if this is an announce
+                            // or newly discovered peer so discovery works asymmetrically too.
                             if packet.msg_type == "announce" {
                                 let current_presence = self.presence.read().unwrap().clone();
                                 if current_presence.status != "offline" {
@@ -548,9 +712,18 @@ impl DiscoveryManager {
                                         protocol_version: 1,
                                         status: current_presence.status,
                                         status_message: current_presence.status_message,
+                                        os: std::env::consts::OS.to_string(),
                                     };
                                     if let Ok(data) = serde_json::to_vec(&reply_packet) {
                                         Self::send_everywhere(&data).await;
+                                    }
+                                    if is_new_or_changed {
+                                        let mgr_clone = Arc::clone(self);
+                                        let peer_ip = ip.clone();
+                                        let peer_port = packet.port;
+                                        tokio::spawn(async move {
+                                            mgr_clone.send_hello(&peer_ip, peer_port).await;
+                                        });
                                     }
                                 }
                             }
@@ -566,7 +739,6 @@ impl DiscoveryManager {
     }
 
     async fn run_announcer(&self) {
-        // Ephemeral socket to send multicast packets
         let sender = match UdpSocket::bind("0.0.0.0:0").await {
             Ok(s) => s,
             Err(e) => {
@@ -577,7 +749,6 @@ impl DiscoveryManager {
         let _ = sender.set_multicast_loop_v4(true);
         let target = SocketAddr::V4(SocketAddrV4::new(MULTICAST_IPV4, MULTICAST_PORT));
 
-        // Initial rapid announces on startup
         for _ in 0..3 {
             let status = self.presence.read().unwrap().status.clone();
             if status != "offline" {
@@ -586,7 +757,6 @@ impl DiscoveryManager {
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
 
-        // Periodic announces
         let mut interval = tokio::time::interval(Duration::from_secs(3));
         loop {
             interval.tick().await;
@@ -609,6 +779,7 @@ impl DiscoveryManager {
             protocol_version: 1,
             status: pres.status,
             status_message: pres.status_message,
+            os: std::env::consts::OS.to_string(),
         };
 
         if let Ok(bytes) = serde_json::to_vec(&packet) {
@@ -627,30 +798,25 @@ impl DiscoveryManager {
 
     pub async fn send_bye(&self) {
         let pres = self.presence.read().unwrap().clone();
-        {
-            let packet = DiscoveryPacket {
-                msg_type: "bye".to_string(),
-                device_id: self.settings.device_id.clone(),
-                alias: pres.alias,
-                device_type: self.settings.device_type.clone(),
-                port: self.settings.port,
-                fingerprint: self.fingerprint.clone(),
-                protocol_version: 1,
-                status: "offline".to_string(),
-                status_message: "".to_string(),
-            };
-            if let Ok(bytes) = serde_json::to_vec(&packet) {
-                Self::send_everywhere(&bytes).await;
-            }
+        let packet = DiscoveryPacket {
+            msg_type: "bye".to_string(),
+            device_id: self.settings.device_id.clone(),
+            alias: pres.alias,
+            device_type: self.settings.device_type.clone(),
+            port: self.settings.port,
+            fingerprint: self.fingerprint.clone(),
+            protocol_version: 1,
+            status: "offline".to_string(),
+            status_message: "".to_string(),
+            os: std::env::consts::OS.to_string(),
+        };
+        if let Ok(bytes) = serde_json::to_vec(&packet) {
+            Self::send_everywhere(&bytes).await;
         }
     }
 
     async fn run_pruner(&self) {
-        let probe_client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(3))
-            .build()
-            .ok();
+        let probe_client = shared_probe_client();
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         loop {
             interval.tick().await;
@@ -687,25 +853,26 @@ impl DiscoveryManager {
 
             // A peer that stopped announcing is not necessarily gone: during a big
             // file transfer the Wi-Fi is saturated and UDP announcements get lost.
-            // Ask it directly before removing it from the list.
+            // Ask it directly before removing it from the list (also updates RTT latency).
             let stale: Vec<(String, String, u16)> = {
                 let lock = self.peers.read().unwrap();
                 lock.values()
-                    .filter(|p| now.saturating_sub(p.last_seen) >= 15)
+                    .filter(|p| now.saturating_sub(p.last_seen) >= 12)
                     .map(|p| (p.device_id.clone(), p.ip.clone(), p.port))
                     .collect()
             };
+            let mut latency_updated = false;
             for (id, ip, port) in stale {
-                let alive = match &probe_client {
-                    Some(c) => match c.get(format!("https://{}:{}/api/ping", ip, port)).send().await {
-                        Ok(r) => r.status().is_success(),
-                        Err(_) => false,
-                    },
-                    None => false,
+                let start = Instant::now();
+                let alive = match probe_client.get(format!("https://{}:{}/api/ping", ip, port)).send().await {
+                    Ok(r) if r.status().is_success() => Some(start.elapsed().as_millis().max(1) as u64),
+                    _ => None,
                 };
-                if alive {
+                if let Some(rtt) = alive {
                     if let Some(p) = self.peers.write().unwrap().get_mut(&id) {
                         p.last_seen = Self::now_secs();
+                        p.latency_ms = Some(rtt);
+                        latency_updated = true;
                     }
                 }
             }
@@ -714,9 +881,8 @@ impl DiscoveryManager {
             {
                 let mut lock = self.peers.write().unwrap();
                 let initial_len = lock.len();
-                // Still silent after the direct check: the peer is really offline.
                 lock.retain(|id, peer| {
-                    let active = Self::now_secs().saturating_sub(peer.last_seen) < 15;
+                    let active = Self::now_secs().saturating_sub(peer.last_seen) < 18;
                     if !active {
                         println!("[Discovery] Peer offline (timed out): {} ({})", peer.alias, id);
                     }
@@ -726,7 +892,7 @@ impl DiscoveryManager {
                     removed = true;
                 }
             }
-            if removed {
+            if removed || latency_updated {
                 self.emit_peers_changed();
             }
         }

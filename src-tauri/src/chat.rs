@@ -1,12 +1,38 @@
-use crate::db::{ChatMessage, Database};
+use crate::db::{ChatMessage, Database, KnownPeer};
 use crate::discovery::{DiscoveryManager, Peer};
 use crate::server::SendMessagePayload;
 use crate::settings::SettingsState;
 use chrono::Local;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
+
+fn shared_chat_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("Failed to build chat HTTP client")
+        })
+        .clone()
+}
+
+fn shared_short_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .timeout(Duration::from_secs(3))
+                .build()
+                .expect("Failed to build short HTTP client")
+        })
+        .clone()
+}
 
 #[tauri::command]
 pub async fn send_chat_message(
@@ -41,13 +67,24 @@ pub async fn send_chat_message(
         "Queued".to_string()
     };
 
+    let receiver_name = peer_opt
+        .as_ref()
+        .map(|p| p.alias.clone())
+        .or_else(|| {
+            db.get_known_peers()
+                .ok()
+                .and_then(|list| list.into_iter().find(|k| k.device_id == peer_id))
+                .map(|k| k.alias)
+        })
+        .unwrap_or_else(|| "Peer".to_string());
+
     let mut msg = ChatMessage {
         id: msg_id.clone(),
         thread_peer_id: peer_id.clone(),
         sender_id: my_settings.device_id.clone(),
         sender_name: my_settings.alias.clone(),
         receiver_id: peer_id.clone(),
-        receiver_name: peer_opt.as_ref().map(|p| p.alias.clone()).unwrap_or_else(|| "Peer".to_string()),
+        receiver_name,
         content: text.clone(),
         status: initial_status,
         created_at: now_ms,
@@ -62,11 +99,7 @@ pub async fn send_chat_message(
     let _ = db.save_message(&msg);
 
     if let Some(peer) = peer_opt {
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(15))
-            .build()
-            .map_err(|e| format!("HTTP client error: {}", e))?;
+        let client = shared_chat_client();
 
         let payload = SendMessagePayload {
             id: msg_id.clone(),
@@ -98,7 +131,7 @@ pub async fn send_chat_message(
                 }
             }
             Err(_) => {
-                // Keep as queued if unreachable
+                // Keep as queued if unreachable so queue flusher will deliver when reachable
                 let queued_status = "Queued".to_string();
                 msg.status = queued_status.clone();
                 let _ = db.update_status(&msg_id, &queued_status);
@@ -113,6 +146,35 @@ pub async fn send_chat_message(
 }
 
 #[tauri::command]
+pub async fn retry_chat_message(
+    db: State<'_, Arc<Database>>,
+    discovery_mgr: State<'_, Arc<DiscoveryManager>>,
+    app_handle: AppHandle,
+    message_id: String,
+) -> Result<ChatMessage, String> {
+    let mut msg = db
+        .get_message_by_id(&message_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Message not found".to_string())?;
+
+    let peers = discovery_mgr.get_peers();
+    let peer = peers
+        .iter()
+        .find(|p| p.device_id == msg.thread_peer_id)
+        .cloned()
+        .ok_or_else(|| "Device is currently offline".to_string())?;
+
+    let client = shared_chat_client();
+    deliver_stored(&client, &peer, &msg).await?;
+    let time_str = Local::now().format("%I:%M %p").to_string();
+    let delivered_status = format!("Delivered, {}", time_str);
+    msg.status = delivered_status.clone();
+    let _ = db.update_status(&msg.id, &delivered_status);
+    let _ = app_handle.emit("message_status_updated", &msg);
+    Ok(msg)
+}
+
+#[tauri::command]
 pub async fn send_typing_indicator(
     discovery_mgr: State<'_, Arc<DiscoveryManager>>,
     settings_state: State<'_, Arc<SettingsState>>,
@@ -121,12 +183,7 @@ pub async fn send_typing_indicator(
     let my_settings = settings_state.get_settings();
     let peers = discovery_mgr.get_peers();
     if let Some(peer) = peers.iter().find(|p| p.device_id == peer_id) {
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_millis(1200))
-            .build()
-            .map_err(|e| e.to_string())?;
-
+        let client = shared_short_client();
         let url = format!("https://{}:{}/api/message/typing", peer.ip, peer.port);
         let payload = crate::server::TypingPayload {
             sender_id: my_settings.device_id,
@@ -146,21 +203,24 @@ pub async fn edit_chat_message(
     peer_id: String,
     new_content: String,
 ) -> Result<(), String> {
-    db.edit_message(&message_id, &new_content).map_err(|e| e.to_string())?;
+    let cleaned = new_content.trim().to_string();
+    if cleaned.is_empty() {
+        return Err("Message content cannot be empty".to_string());
+    }
+    db.edit_message(&message_id, &cleaned).map_err(|e| e.to_string())?;
     let _ = app_handle.emit("message_edited", serde_json::json!({
         "message_id": message_id,
-        "new_content": new_content
+        "new_content": cleaned
     }));
 
     let peers = discovery_mgr.get_peers();
     if let Some(peer) = peers.iter().find(|p| p.device_id == peer_id) {
-        if let Ok(client) = reqwest::Client::builder().danger_accept_invalid_certs(true).build() {
-            let url = format!("https://{}:{}/api/message/edit", peer.ip, peer.port);
-            let _ = client.post(&url).json(&serde_json::json!({
-                "message_id": message_id,
-                "new_content": new_content
-            })).send().await;
-        }
+        let client = shared_short_client();
+        let url = format!("https://{}:{}/api/message/edit", peer.ip, peer.port);
+        let _ = client.post(&url).json(&serde_json::json!({
+            "message_id": message_id,
+            "new_content": cleaned
+        })).send().await;
     }
     Ok(())
 }
@@ -180,12 +240,11 @@ pub async fn delete_chat_message(
 
     let peers = discovery_mgr.get_peers();
     if let Some(peer) = peers.iter().find(|p| p.device_id == peer_id) {
-        if let Ok(client) = reqwest::Client::builder().danger_accept_invalid_certs(true).build() {
-            let url = format!("https://{}:{}/api/message/delete", peer.ip, peer.port);
-            let _ = client.post(&url).json(&serde_json::json!({
-                "message_id": message_id
-            })).send().await;
-        }
+        let client = shared_short_client();
+        let url = format!("https://{}:{}/api/message/delete", peer.ip, peer.port);
+        let _ = client.post(&url).json(&serde_json::json!({
+            "message_id": message_id
+        })).send().await;
     }
     Ok(())
 }
@@ -210,14 +269,13 @@ pub async fn react_chat_message(
 
     let peers = discovery_mgr.get_peers();
     if let Some(peer) = peers.iter().find(|p| p.device_id == peer_id) {
-        if let Ok(client) = reqwest::Client::builder().danger_accept_invalid_certs(true).build() {
-            let url = format!("https://{}:{}/api/message/reaction", peer.ip, peer.port);
-            let _ = client.post(&url).json(&serde_json::json!({
-                "message_id": message_id,
-                "user_name": my_alias,
-                "emoji": emoji
-            })).send().await;
-        }
+        let client = shared_short_client();
+        let url = format!("https://{}:{}/api/message/reaction", peer.ip, peer.port);
+        let _ = client.post(&url).json(&serde_json::json!({
+            "message_id": message_id,
+            "user_name": my_alias,
+            "emoji": emoji
+        })).send().await;
     }
     Ok(res)
 }
@@ -226,18 +284,20 @@ pub async fn react_chat_message(
 pub async fn mark_thread_read(
     db: State<'_, Arc<Database>>,
     discovery_mgr: State<'_, Arc<DiscoveryManager>>,
+    settings_state: State<'_, Arc<SettingsState>>,
     peer_id: String,
 ) -> Result<(), String> {
     db.mark_as_read(&peer_id).map_err(|e| format!("Database error: {}", e))?;
 
+    let my_id = settings_state.get_settings().device_id;
     let peers = discovery_mgr.get_peers();
     if let Some(peer) = peers.iter().find(|p| p.device_id == peer_id) {
-        if let Ok(client) = reqwest::Client::builder().danger_accept_invalid_certs(true).build() {
-            let url = format!("https://{}:{}/api/message/read", peer.ip, peer.port);
-            let _ = client.post(&url).json(&serde_json::json!({
-                "peer_id": peer_id
-            })).send().await;
-        }
+        let client = shared_short_client();
+        let url = format!("https://{}:{}/api/message/read", peer.ip, peer.port);
+        // Send MY device ID so the remote marks its thread WITH ME as read!
+        let _ = client.post(&url).json(&serde_json::json!({
+            "peer_id": my_id
+        })).send().await;
     }
     Ok(())
 }
@@ -259,9 +319,15 @@ pub fn get_unread_badges(
         .map_err(|e| format!("Database error: {}", e))
 }
 
+#[tauri::command]
+pub fn get_known_peers(
+    db: State<'_, Arc<Database>>,
+) -> Result<Vec<KnownPeer>, String> {
+    db.get_known_peers().map_err(|e| e.to_string())
+}
 
 /// Sends one stored message to a peer. Used by the retry loop below.
-async fn deliver_stored(
+pub async fn deliver_stored(
     client: &reqwest::Client,
     peer: &Peer,
     msg: &ChatMessage,
@@ -291,18 +357,10 @@ async fn deliver_stored(
 }
 
 /// Background loop: every few seconds, deliver messages that are still "Queued"
-/// to peers that are reachable now. Before this existed, a message that failed
-/// once (for example during a big file transfer) stayed queued forever.
+/// to peers that are reachable now.
 pub fn start_queue_flusher(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let client = match reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(15))
-            .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+        let client = shared_chat_client();
 
         loop {
             tokio::time::sleep(Duration::from_secs(4)).await;
@@ -333,7 +391,7 @@ pub fn start_queue_flusher(app: AppHandle) {
 
             for mut msg in pending {
                 if blocked_threads.contains(&msg.thread_peer_id) {
-                    continue; // keep the original order per conversation
+                    continue;
                 }
                 let peer = match peers.iter().find(|p| p.device_id == msg.thread_peer_id) {
                     Some(p) => p.clone(),

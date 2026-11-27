@@ -1,7 +1,7 @@
 use crate::cert::TlsCertificate;
-use crate::db::{ChatMessage, Database};
+use crate::db::{ChatMessage, Database, KnownPeer};
+use crate::discovery::{DiscoveryManager, Peer};
 use crate::settings::{AppSettings, SettingsState};
-use crate::discovery::DiscoveryManager;
 use crate::transfer::{
     sanitize_file_name, spawn_upload, FileTransferInfo, FileTransferRequest, FileTransferResponse,
     TransferManager, TransferStatus,
@@ -39,6 +39,8 @@ pub struct DeviceInfoResponse {
     pub status: String,
     #[serde(default)]
     pub status_message: String,
+    #[serde(default)]
+    pub os: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +134,48 @@ impl ServerState {
             }
         }
     }
+
+    fn build_info_response(&self) -> DeviceInfoResponse {
+        let settings = self.live_settings();
+        DeviceInfoResponse {
+            device_id: settings.device_id,
+            alias: settings.alias,
+            device_type: settings.device_type,
+            port: settings.port,
+            fingerprint: self.cert.fingerprint.clone(),
+            protocol_version: 1,
+            status: settings.status,
+            status_message: settings.status_message,
+            os: std::env::consts::OS.to_string(),
+        }
+    }
+}
+
+pub fn build_router(state: Arc<ServerState>) -> Router {
+    Router::new()
+        .route("/api/ping", get(ping_handler))
+        .route("/api/info", get(info_handler))
+        .route("/api/discovery/hello", post(discovery_hello_handler))
+        .route("/api/message", post(message_handler))
+        .route("/api/ws", get(ws_handler))
+        .route("/api/files/request", post(file_request_handler))
+        .route("/api/files/response", post(file_response_handler))
+        .route("/api/files/chunk/:transfer_id", post(file_chunk_handler))
+        .route("/api/files/pause/:transfer_id", post(file_pause_handler))
+        .route("/api/files/resume/:transfer_id", post(file_resume_handler))
+        .route("/api/files/cancel/:transfer_id", post(file_cancel_handler))
+        .route("/api/message/typing", post(typing_handler))
+        .route("/api/message/read", post(read_handler))
+        .route("/api/message/edit", post(edit_handler))
+        .route("/api/message/delete", post(delete_handler))
+        .route("/api/message/reaction", post(reaction_handler))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        .with_state(state)
 }
 
 pub async fn start_server(
@@ -151,27 +195,7 @@ pub async fn start_server(
         settings_state,
     });
 
-    let app = Router::new()
-        .route("/api/ping", get(ping_handler))
-        .route("/api/info", get(info_handler))
-        .route("/api/message", post(message_handler))
-        .route("/api/ws", get(ws_handler))
-        .route("/api/files/request", post(file_request_handler))
-        .route("/api/files/response", post(file_response_handler))
-        .route("/api/files/chunk/:transfer_id", post(file_chunk_handler))
-        .route("/api/files/cancel/:transfer_id", post(file_cancel_handler))
-        .route("/api/message/typing", post(typing_handler))
-        .route("/api/message/read", post(read_handler))
-        .route("/api/message/edit", post(edit_handler))
-        .route("/api/message/delete", post(delete_handler))
-        .route("/api/message/reaction", post(reaction_handler))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
-        .with_state(state);
+    let app = build_router(state);
 
     let rustls_config = RustlsConfig::from_pem(
         cert.cert_pem.into_bytes(),
@@ -213,25 +237,68 @@ async fn ping_handler() -> &'static str {
 async fn info_handler(
     State(state): State<Arc<ServerState>>,
 ) -> Json<DeviceInfoResponse> {
-    let settings = if let Some(ref st) = state.settings_state {
-        st.get_settings()
-    } else {
-        state.settings.clone()
-    };
-    Json(DeviceInfoResponse {
-        device_id: settings.device_id,
-        alias: settings.alias,
-        device_type: settings.device_type,
-        port: settings.port,
-        fingerprint: state.cert.fingerprint.clone(),
-        protocol_version: 1,
-        status: settings.status,
-        status_message: settings.status_message,
-    })
+    Json(state.build_info_response())
+}
+
+async fn discovery_hello_handler(
+    State(state): State<Arc<ServerState>>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(remote_info): Json<DeviceInfoResponse>,
+) -> Json<DeviceInfoResponse> {
+    let my_info = state.build_info_response();
+    if remote_info.device_id != my_info.device_id && !state.is_blocked(&remote_info.device_id) {
+        let ip_raw = remote.ip().to_canonical();
+        let ip = if ip_raw.is_loopback() || ip_raw.is_unspecified() {
+            "127.0.0.1".to_string()
+        } else {
+            ip_raw.to_string()
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let peer = Peer {
+            device_id: remote_info.device_id.clone(),
+            alias: remote_info.alias.clone(),
+            device_type: remote_info.device_type.clone(),
+            ip: ip.clone(),
+            port: remote_info.port,
+            fingerprint: remote_info.fingerprint.clone(),
+            last_seen: now,
+            status: if remote_info.status.is_empty() {
+                "available".to_string()
+            } else {
+                remote_info.status.clone()
+            },
+            status_message: remote_info.status_message.clone(),
+            os: remote_info.os.clone(),
+            latency_ms: None,
+        };
+
+        if let Some(ref handle) = state.app_handle {
+            if let Some(mgr) = handle.try_state::<Arc<DiscoveryManager>>() {
+                mgr.register_or_update_peer(peer);
+            } else {
+                let _ = state.db.upsert_peer(&KnownPeer {
+                    device_id: peer.device_id,
+                    alias: peer.alias,
+                    device_type: peer.device_type,
+                    os: peer.os,
+                    ip: peer.ip,
+                    port: peer.port,
+                    fingerprint: peer.fingerprint,
+                    last_seen: peer.last_seen,
+                });
+            }
+        }
+    }
+    Json(my_info)
 }
 
 async fn message_handler(
     State(state): State<Arc<ServerState>>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(payload): Json<SendMessagePayload>,
 ) -> Json<MessageAck> {
     let now = SystemTime::now()
@@ -267,12 +334,36 @@ async fn message_handler(
         reactions: None,
     };
 
-    if let Err(e) = state.db.save_message(&chat_msg) {
-        eprintln!("[Server] Failed to save incoming message: {}", e);
-    }
+    // Ensure sender exists in persistent peer table even if discovery didn't fire yet
+    let ip_raw = remote.ip().to_canonical();
+    let ip_str = if ip_raw.is_loopback() || ip_raw.is_unspecified() {
+        "127.0.0.1".to_string()
+    } else {
+        ip_raw.to_string()
+    };
+    let _ = state.db.upsert_peer(&KnownPeer {
+        device_id: payload.sender_id.clone(),
+        alias: payload.sender_name.clone(),
+        device_type: "desktop".to_string(),
+        os: String::new(),
+        ip: ip_str,
+        port: 53317,
+        fingerprint: String::new(),
+        last_seen: (now / 1000).max(0) as u64,
+    });
 
-    if let Some(ref handle) = state.app_handle {
-        let _ = handle.emit("new_message", &chat_msg);
+    let is_new = match state.db.save_incoming_message(&chat_msg) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("[Server] Failed to save incoming message: {}", e);
+            false
+        }
+    };
+
+    if is_new {
+        if let Some(ref handle) = state.app_handle {
+            let _ = handle.emit("new_message", &chat_msg);
+        }
     }
 
     Json(MessageAck {
@@ -287,6 +378,9 @@ async fn typing_handler(
     State(state): State<Arc<ServerState>>,
     Json(payload): Json<TypingPayload>,
 ) -> Json<serde_json::Value> {
+    if state.is_blocked(&payload.sender_id) {
+        return Json(serde_json::json!({ "success": true }));
+    }
     if let Some(ref handle) = state.app_handle {
         let _ = handle.emit("peer_typing", &payload);
     }
@@ -297,7 +391,7 @@ async fn read_handler(
     State(state): State<Arc<ServerState>>,
     Json(payload): Json<ReadPayload>,
 ) -> Json<serde_json::Value> {
-    let _ = state.db.mark_as_read(&payload.peer_id);
+    let _ = state.db.mark_outgoing_read(&payload.peer_id);
     if let Some(ref handle) = state.app_handle {
         let _ = handle.emit("thread_marked_read", &payload.peer_id);
     }
@@ -350,19 +444,33 @@ async fn file_request_handler(
     State(state): State<Arc<ServerState>>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(req): Json<FileTransferRequest>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // Blocked: pretend it was declined, do not reveal the block.
     if state.is_blocked(&req.sender_id) {
-        return Json(serde_json::json!({
+        return Ok(Json(serde_json::json!({
             "success": true,
             "transfer_id": req.transfer_id,
             "auto_declined": true
-        }));
+        })));
+    }
+
+    // Idempotency: if this transfer_id already exists, return its current status
+    if let Some(existing) = state.transfer_mgr.get_transfer(&req.transfer_id) {
+        return Ok(Json(serde_json::json!({
+            "success": true,
+            "transfer_id": req.transfer_id,
+            "auto_accepted": matches!(existing.status, TransferStatus::Accepted | TransferStatus::Transferring | TransferStatus::Completed)
+        })));
     }
 
     let settings = state.live_settings();
     let download_dir = PathBuf::from(&settings.download_dir);
-    let _ = std::fs::create_dir_all(&download_dir);
+    if let Err(e) = std::fs::create_dir_all(&download_dir) {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Cannot create download directory: {}", e),
+        ));
+    }
 
     // Never trust the remote file name: strip folders and illegal characters.
     let safe_name = sanitize_file_name(&req.file_name);
@@ -401,14 +509,22 @@ async fn file_request_handler(
                     break;
                 }
             }
-            // Any other error will be reported properly when the first chunk arrives.
-            Err(_) => break,
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Cannot create destination file: {}", e),
+                ));
+            }
         }
     }
 
     // Where to send the answer: the address this request really came from.
-    // This works even if our discovery list does not know the sender (yet).
-    let peer_ip = remote.ip().to_canonical().to_string();
+    let raw_ip = remote.ip().to_canonical();
+    let peer_ip = if raw_ip.is_loopback() || raw_ip.is_unspecified() {
+        "127.0.0.1".to_string()
+    } else {
+        raw_ip.to_string()
+    };
     let peer_port = if req.sender_port != 0 {
         req.sender_port
     } else {
@@ -424,6 +540,22 @@ async fn file_request_handler(
             })
             .unwrap_or(53317)
     };
+
+    // Ensure sender exists in persistent peer table
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let _ = state.db.upsert_peer(&KnownPeer {
+        device_id: req.sender_id.clone(),
+        alias: req.sender_name.clone(),
+        device_type: "desktop".to_string(),
+        os: String::new(),
+        ip: peer_ip.clone(),
+        port: peer_port,
+        fingerprint: String::new(),
+        last_seen: now_secs,
+    });
 
     // Favourites (or "accept everything") skip the permission prompt.
     let auto_accept = settings.auto_accept || state.is_favorite(&req.sender_id);
@@ -452,18 +584,17 @@ async fn file_request_handler(
 
     state.transfer_mgr.add_transfer(transfer_info);
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "success": true,
         "transfer_id": req.transfer_id,
         "auto_accepted": auto_accept
-    }))
+    })))
 }
 
 async fn file_response_handler(
     State(state): State<Arc<ServerState>>,
     Json(res): Json<FileTransferResponse>,
 ) -> Json<serde_json::Value> {
-    // Only the sender of an outgoing transfer may receive an answer.
     let is_outgoing = state
         .transfer_mgr
         .get_transfer(&res.transfer_id)
@@ -475,8 +606,6 @@ async fn file_response_handler(
 
     state.transfer_mgr.handle_response(&res.transfer_id, res.accepted);
 
-    // Start sending right away. This no longer depends on the chat window
-    // being open, which is why files sometimes never left the sender.
     if res.accepted {
         if let Err(e) = spawn_upload(state.transfer_mgr.clone(), res.transfer_id.clone()) {
             eprintln!("[Server] Failed to start upload: {}", e);
@@ -491,10 +620,6 @@ async fn file_chunk_handler(
     Query(query): Query<ChunkQuery>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    // Returning a bare `String` as the error produced HTTP 200, so the sender
-    // believed every chunk was saved even when the receiver failed to write it.
-    // Disk writes are blocking: run them off the async worker threads so a big
-    // transfer can not starve chat messages and other requests.
     let mgr = state.transfer_mgr.clone();
     let offset = query.offset;
     let updated = tokio::task::spawn_blocking(move || mgr.write_incoming_chunk(&transfer_id, offset, &body))
@@ -505,6 +630,22 @@ async fn file_chunk_handler(
         "success": true,
         "transferred": updated.transferred_bytes
     })))
+}
+
+async fn file_pause_handler(
+    State(state): State<Arc<ServerState>>,
+    Path(transfer_id): Path<String>,
+) -> Json<serde_json::Value> {
+    state.transfer_mgr.pause(&transfer_id);
+    Json(serde_json::json!({ "success": true }))
+}
+
+async fn file_resume_handler(
+    State(state): State<Arc<ServerState>>,
+    Path(transfer_id): Path<String>,
+) -> Json<serde_json::Value> {
+    state.transfer_mgr.resume(&transfer_id);
+    Json(serde_json::json!({ "success": true }))
 }
 
 async fn file_cancel_handler(

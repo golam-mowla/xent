@@ -1911,6 +1911,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-range"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2149c4b4b83390c71fab669730347d578ec6bdf759f2160c581ad8b8819733b4"
+
+[[package]]
 name = "http-range-header"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4400,6 +4406,7 @@ dependencies = [
  "gtk",
  "heck 0.5.0",
  "http",
+ "http-range",
  "jni",
  "libc",
  "log",
@@ -5980,7 +5987,7 @@ dependencies = [
 
 [[package]]
 name = "xent"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "axum",
  "axum-server",

@@ -413,3 +413,24 @@
   - Added `.github/workflows/android.yml` for automated cloud APK builds and `scripts/android-patch.sh` for Wi-Fi multicast lock and network permissions.
 - **Automated Unit Tests (12/12 passing)**:
   - Verified all 12 backend unit tests pass in 0.04s with 0 warnings.
+
+---
+
+## Phase 17 (v0.2.6): Two-Node Bug Fixes, Full Messaging/Transfer Polish & Native Kotlin Android App (Completed)
+
+### What Works
+- **Fixed Critical Two-Node Bugs**:
+  - Fixed `db.get_messages` returning the oldest 200 rows instead of the latest 200 messages chronologically.
+  - Fixed `mark_thread_read` sending the wrong device ID and failing to persist `"Read, ..."` receipts back in sender SQLite (`mark_outgoing_read`).
+  - Added bidirectional HTTPS discovery handshake (`/api/discovery/hello`), Windows loopback multi-instance probing (`127.0.0.1`), RTT latency tracking (`latency_ms`), and persistent `peers` SQLite history so offline conversations remain visible.
+  - Fixed `TransferManager::pause` RwLock deadlock, added real upload/receive Pause & Resume across HTTPS (`/api/files/pause/:id`, `/api/files/resume/:id`), and persisted `is_incoming` in SQLite.
+  - Reused shared TLS HTTP clients (`OnceLock<reqwest::Client>`) for responsive messaging and transfers.
+- **Complete Desktop UI Features**:
+  - Offline conversation history, in-chat message search bar, inline image/video/audio previews + lightbox via `convertFileSrc`, hover reaction pills, Pause/Resume controls, live incoming file offer banner, in-app Edit & Confirm modals (no browser `prompt()`/`confirm()`), and Web Audio sound notifications.
+- **Native Kotlin Android Application (`android/`)**:
+  - Built complete Jetpack Compose Material 3 app (`com.xent.app`) compatible with Desktop Xent protocol: BouncyCastle PKCS12 self-signed TLS, pure-Kotlin HTTPS/1.1 server (`XentHttpServer`), UDP multicast discovery (`WifiManager.MulticastLock`), offline retry queue, multi-file URI streaming (`512 KB` chunks + Pause/Resume/Cancel), Favorites auto-accept, and Light/Dark/System theme.
+
+### What Was Tested
+- **Rust Backend & Two-Node HTTPS/TLS E2E (`cargo test`)**: All 15 unit tests + live two-node E2E suite passed with zero warnings.
+- **Live Multi-Instance Desktop Verification**: Spawned two simultaneous `xent.exe` processes (`--instance e2e_node1 --port 53320` and `--instance e2e_node2 --port 53321`), verified `/api/ping`, `/api/info`, `/api/discovery/hello`, and `/api/message`.
+- **Android Kotlin JVM Tests & APK Build (`gradle testDebugUnitTest assembleDebug`)**: All protocol tests passed and debug APK built cleanly for Android SDK 34.

@@ -114,7 +114,17 @@ Build the NSIS Windows installer locally:
 npx @tauri-apps/cli build
 ```
 The output installer will be located at:
-`src-tauri/target/release/bundle/nsis/Xent_0.2.3_x64-setup.exe`.
+`src-tauri/target/release/bundle/nsis/Xent_0.2.6_x64-setup.exe`.
+
+## 📱 Native Kotlin Android App (`android/`)
+
+A full native Kotlin + Jetpack Compose Android client lives in `android/`, implementing Xent's UDP multicast discovery (`224.0.0.167:53317`), self-signed HTTPS/TLS peer messaging, offline retry queue, and 512 KB chunked file transfers with Pause/Resume/Cancel.
+
+```bash
+cd android
+gradle testDebugUnitTest assembleDebug
+```
+The debug APK is generated at `android/app/build/outputs/apk/debug/app-debug.apk`.
 
 ---
 

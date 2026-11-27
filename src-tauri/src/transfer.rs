@@ -1,4 +1,4 @@
-use crate::db::Database;
+use crate::db::{Database, KnownPeer};
 use crate::discovery::DiscoveryManager;
 use crate::settings::SettingsState;
 use serde::{Deserialize, Serialize};
@@ -7,11 +7,24 @@ use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{Notify, Semaphore};
 use uuid::Uuid;
+
+fn shared_transfer_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("Failed to build transfer HTTP client")
+        })
+        .clone()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TransferStatus {
@@ -19,6 +32,7 @@ pub enum TransferStatus {
     Accepted,
     Declined,
     Transferring,
+    Paused,
     Completed,
     Cancelled,
     Failed(String),
@@ -40,7 +54,6 @@ pub struct FileTransferInfo {
     pub is_incoming: bool,
     pub file_path: Option<String>,
     /// Where the other device can be reached for this transfer.
-    /// Stored per transfer so the flow never depends on the discovery list.
     #[serde(default)]
     pub peer_ip: String,
     #[serde(default)]
@@ -70,13 +83,11 @@ pub struct FileTransferResponse {
 pub struct TransferManager {
     transfers: Arc<RwLock<HashMap<String, FileTransferInfo>>>,
     cancellations: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
+    pauses: Arc<RwLock<HashMap<String, (Arc<AtomicBool>, Arc<Notify>)>>>,
     response_notifiers: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
     response_results: Arc<RwLock<HashMap<String, bool>>>,
     uploads_started: Arc<RwLock<HashSet<String>>>,
-    /// Last time a progress event was sent to the UI, per transfer (throttling).
     last_emit: Arc<Mutex<HashMap<String, Instant>>>,
-    /// Limits how many files upload at the same time, so chat messages and
-    /// discovery packets are never starved by a pile of big files.
     upload_slots: Arc<Semaphore>,
     app_handle: Option<AppHandle>,
     db: Option<Arc<Database>>,
@@ -117,6 +128,7 @@ impl TransferManager {
         Self {
             transfers: Arc::new(RwLock::new(HashMap::new())),
             cancellations: Arc::new(RwLock::new(HashMap::new())),
+            pauses: Arc::new(RwLock::new(HashMap::new())),
             response_notifiers: Arc::new(RwLock::new(HashMap::new())),
             response_results: Arc::new(RwLock::new(HashMap::new())),
             uploads_started: Arc::new(RwLock::new(HashSet::new())),
@@ -131,9 +143,6 @@ impl TransferManager {
         self.upload_slots.clone()
     }
 
-    /// True at most ~5 times per second per transfer. Progress events used to be
-    /// sent for every 512 KB chunk, which made the UI rebuild itself so often
-    /// that typing and sending messages felt frozen during a transfer.
     fn throttle_ok(&self, transfer_id: &str) -> bool {
         let mut map = self.last_emit.lock().unwrap();
         let now = Instant::now();
@@ -146,14 +155,20 @@ impl TransferManager {
         }
     }
 
-    /// An incoming file that was declined or cancelled leaves an empty/partial
-    /// file behind. Remove it.
     fn cleanup_partial(t: &FileTransferInfo) {
         if t.is_incoming {
             if let Some(ref p) = t.file_path {
                 let _ = std::fs::remove_file(p);
             }
         }
+    }
+
+    fn cleanup_runtime_state(&self, transfer_id: &str) {
+        self.cancellations.write().unwrap().remove(transfer_id);
+        self.pauses.write().unwrap().remove(transfer_id);
+        self.response_notifiers.write().unwrap().remove(transfer_id);
+        self.response_results.write().unwrap().remove(transfer_id);
+        self.last_emit.lock().unwrap().remove(transfer_id);
     }
 
     fn maybe_record_history(&self, t: &FileTransferInfo) {
@@ -179,6 +194,7 @@ impl TransferManager {
                 status: status_str.to_string(),
                 created_at: now_ms,
                 local_path: t.file_path.clone(),
+                is_incoming: t.is_incoming,
             };
             let _ = db.save_transfer(&record);
         }
@@ -193,13 +209,60 @@ impl TransferManager {
         flag
     }
 
+    pub fn register_pause(&self, transfer_id: &str) -> (Arc<AtomicBool>, Arc<Notify>) {
+        let mut lock = self.pauses.write().unwrap();
+        if let Some(pair) = lock.get(transfer_id) {
+            return pair.clone();
+        }
+        let pair = (Arc::new(AtomicBool::new(false)), Arc::new(Notify::new()));
+        lock.insert(transfer_id.to_string(), pair.clone());
+        pair
+    }
+
+    pub fn pause(&self, transfer_id: &str) {
+        let pair = self.register_pause(transfer_id);
+        pair.0.store(true, Ordering::SeqCst);
+        let mut lock = self.transfers.write().unwrap();
+        if let Some(t) = lock.get_mut(transfer_id) {
+            if matches!(
+                t.status,
+                TransferStatus::Transferring | TransferStatus::Accepted | TransferStatus::Pending
+            ) {
+                t.status = TransferStatus::Paused;
+                t.speed_mbps = 0.0;
+                if let Some(ref handle) = self.app_handle {
+                    let _ = handle.emit("file_transfer_progress", t.clone());
+                }
+            }
+        }
+    }
+
+    pub fn resume(&self, transfer_id: &str) {
+        if let Some((flag, notify)) = self.pauses.read().unwrap().get(transfer_id) {
+            flag.store(false, Ordering::SeqCst);
+            notify.notify_waiters();
+        }
+        let mut lock = self.transfers.write().unwrap();
+        if let Some(t) = lock.get_mut(transfer_id) {
+            if t.status == TransferStatus::Paused {
+                t.status = TransferStatus::Transferring;
+                if let Some(ref handle) = self.app_handle {
+                    let _ = handle.emit("file_transfer_progress", t.clone());
+                }
+            }
+        }
+    }
+
     pub fn cancel(&self, transfer_id: &str) {
         if let Some(flag) = self.cancellations.read().unwrap().get(transfer_id) {
             flag.store(true, Ordering::SeqCst);
         }
+        // Wake up paused loop if currently paused
+        if let Some((_, notify)) = self.pauses.read().unwrap().get(transfer_id) {
+            notify.notify_waiters();
+        }
         let mut lock = self.transfers.write().unwrap();
         if let Some(t) = lock.get_mut(transfer_id) {
-            // A late cancel must never turn a finished transfer into a cancelled one.
             if t.status == TransferStatus::Completed {
                 return;
             }
@@ -210,6 +273,8 @@ impl TransferManager {
             }
             self.maybe_record_history(t);
         }
+        drop(lock);
+        self.cleanup_runtime_state(transfer_id);
     }
 
     pub fn register_response_waiter(&self, transfer_id: &str) -> Arc<Notify> {
@@ -246,6 +311,10 @@ impl TransferManager {
         if let Some(notify) = self.response_notifiers.read().unwrap().get(transfer_id) {
             notify.notify_waiters();
         }
+        if !accepted {
+            drop(lock);
+            self.cleanup_runtime_state(transfer_id);
+        }
     }
 
     pub fn get_response(&self, transfer_id: &str) -> Option<bool> {
@@ -267,29 +336,39 @@ impl TransferManager {
         speed_mbps: f64,
         status: TransferStatus,
     ) {
-        let mut lock = self.transfers.write().unwrap();
-        if let Some(t) = lock.get_mut(transfer_id) {
-            if t.status == TransferStatus::Cancelled
-                && matches!(status, TransferStatus::Transferring | TransferStatus::Accepted)
-            {
-                return;
-            }
-            // Always tell the UI about state changes; throttle plain progress ticks.
-            let is_tick = status == TransferStatus::Transferring && t.status == TransferStatus::Transferring;
-            t.transferred_bytes = transferred_bytes;
-            t.speed_mbps = speed_mbps;
-            t.status = status;
-            if !is_tick || self.throttle_ok(transfer_id) {
-                if let Some(ref handle) = self.app_handle {
-                    let _ = handle.emit("file_transfer_progress", t.clone());
+        let mut terminal = false;
+        {
+            let mut lock = self.transfers.write().unwrap();
+            if let Some(t) = lock.get_mut(transfer_id) {
+                if t.status == TransferStatus::Cancelled
+                    && matches!(
+                        status,
+                        TransferStatus::Transferring | TransferStatus::Accepted | TransferStatus::Paused
+                    )
+                {
+                    return;
                 }
+                let is_tick = status == TransferStatus::Transferring && t.status == TransferStatus::Transferring;
+                t.transferred_bytes = transferred_bytes;
+                t.speed_mbps = speed_mbps;
+                t.status = status.clone();
+                if !is_tick || self.throttle_ok(transfer_id) {
+                    if let Some(ref handle) = self.app_handle {
+                        let _ = handle.emit("file_transfer_progress", t.clone());
+                    }
+                }
+                self.maybe_record_history(t);
+                terminal = matches!(
+                    status,
+                    TransferStatus::Completed | TransferStatus::Cancelled | TransferStatus::Declined | TransferStatus::Failed(_)
+                );
             }
-            self.maybe_record_history(t);
+        }
+        if terminal {
+            self.cleanup_runtime_state(transfer_id);
         }
     }
 
-    /// Returns true only the first time it is called for a transfer,
-    /// so an upload can never be started twice.
     pub fn try_begin_upload(&self, transfer_id: &str) -> bool {
         self.uploads_started
             .write()
@@ -315,14 +394,17 @@ impl TransferManager {
         offset: u64,
         data: &[u8],
     ) -> Result<FileTransferInfo, String> {
-        let (path_str, just_completed) = {
-            let mut lock = self.transfers.write().unwrap();
+        let (path_str, is_paused) = {
+            let lock = self.transfers.read().unwrap();
             let t = lock
-                .get_mut(transfer_id)
+                .get(transfer_id)
                 .ok_or_else(|| "Transfer not found".to_string())?;
 
             match t.status {
-                TransferStatus::Accepted | TransferStatus::Transferring | TransferStatus::Completed => {}
+                TransferStatus::Accepted
+                | TransferStatus::Transferring
+                | TransferStatus::Paused
+                | TransferStatus::Completed => {}
                 TransferStatus::Cancelled => return Err("Transfer cancelled".to_string()),
                 _ => return Err("Transfer was not accepted".to_string()),
             }
@@ -336,21 +418,14 @@ impl TransferManager {
                 .ok_or_else(|| "Destination file path not set".to_string())?
                 .clone();
 
-            let was_completed = t.status == TransferStatus::Completed;
-            t.transferred_bytes = t.transferred_bytes.max(offset + data.len() as u64);
-            t.status = if t.transferred_bytes >= t.file_size {
-                TransferStatus::Completed
-            } else {
-                TransferStatus::Transferring
-            };
-
-            (p, t.status == TransferStatus::Completed && !was_completed)
+            (p, t.status == TransferStatus::Paused)
         };
 
         if let Some(parent) = std::path::Path::new(&path_str).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
 
+        // Perform actual disk write BEFORE marking bytes transferred
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -363,17 +438,29 @@ impl TransferManager {
         file.write_all(data)
             .map_err(|e| format!("Failed to write chunk: {}", e))?;
 
-        let updated = self
-            .get_transfer(transfer_id)
-            .ok_or_else(|| "Transfer not found".to_string())?;
+        let (updated, just_completed) = {
+            let mut lock = self.transfers.write().unwrap();
+            let t = lock
+                .get_mut(transfer_id)
+                .ok_or_else(|| "Transfer not found".to_string())?;
+            let was_completed = t.status == TransferStatus::Completed;
+            t.transferred_bytes = t.transferred_bytes.max(offset + data.len() as u64);
+            if t.transferred_bytes >= t.file_size {
+                t.status = TransferStatus::Completed;
+            } else if !is_paused && t.status != TransferStatus::Cancelled {
+                t.status = TransferStatus::Transferring;
+            }
+            (t.clone(), t.status == TransferStatus::Completed && !was_completed)
+        };
+
         if just_completed || self.throttle_ok(transfer_id) {
             if let Some(ref handle) = self.app_handle {
                 let _ = handle.emit("file_transfer_progress", updated.clone());
             }
         }
         if just_completed {
-            // Incoming files used to be missing from the history.
             self.maybe_record_history(&updated);
+            self.cleanup_runtime_state(transfer_id);
         }
 
         Ok(updated)
@@ -399,6 +486,26 @@ pub async fn send_file_request(
     transfer_mgr: State<'_, Arc<TransferManager>>,
     discovery_mgr: State<'_, Arc<DiscoveryManager>>,
     settings_state: State<'_, Arc<SettingsState>>,
+    db: State<'_, Arc<Database>>,
+    peer_id: String,
+    file_path: String,
+) -> Result<FileTransferInfo, String> {
+    send_file_request_core(
+        transfer_mgr.inner(),
+        discovery_mgr.inner(),
+        settings_state.inner(),
+        Some(db.inner()),
+        peer_id,
+        file_path,
+    )
+    .await
+}
+
+pub async fn send_file_request_core(
+    transfer_mgr: &Arc<TransferManager>,
+    discovery_mgr: &Arc<DiscoveryManager>,
+    settings_state: &Arc<SettingsState>,
+    db: Option<&Arc<Database>>,
     peer_id: String,
     file_path: String,
 ) -> Result<FileTransferInfo, String> {
@@ -446,11 +553,24 @@ pub async fn send_file_request(
 
     transfer_mgr.add_transfer(transfer_info.clone());
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+    if let Some(d) = db {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = d.upsert_peer(&KnownPeer {
+            device_id: peer.device_id.clone(),
+            alias: peer.alias.clone(),
+            device_type: peer.device_type.clone(),
+            os: peer.os.clone(),
+            ip: peer.ip.clone(),
+            port: peer.port,
+            fingerprint: peer.fingerprint.clone(),
+            last_seen: now_secs,
+        });
+    }
+
+    let client = shared_transfer_client();
 
     let req_body = FileTransferRequest {
         transfer_id: transfer_id.clone(),
@@ -467,7 +587,6 @@ pub async fn send_file_request(
     let res = match client.post(&url).json(&req_body).send().await {
         Ok(r) => r,
         Err(e) => {
-            // Previously this failed silently and the card stayed on "waiting" forever.
             transfer_mgr.mark_failed(&transfer_id, "Could not reach the other device");
             return Err(format!("Could not reach {}: {}", peer.alias, e));
         }
@@ -479,7 +598,6 @@ pub async fn send_file_request(
         return Err(format!("{} rejected the request ({})", peer.alias, code));
     }
 
-    // Favourite devices (or "accept everything") answer right away.
     let ack: serde_json::Value = res.json().await.unwrap_or(serde_json::Value::Null);
     let flag = |name: &str| ack.get(name).and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -487,7 +605,7 @@ pub async fn send_file_request(
         transfer_mgr.handle_response(&transfer_id, false);
     } else if flag("auto_accepted") {
         transfer_mgr.handle_response(&transfer_id, true);
-        spawn_upload(transfer_mgr.inner().clone(), transfer_id.clone())?;
+        spawn_upload(transfer_mgr.clone(), transfer_id.clone())?;
     }
 
     Ok(transfer_mgr.get_transfer(&transfer_id).unwrap_or(transfer_info))
@@ -496,6 +614,14 @@ pub async fn send_file_request(
 #[tauri::command]
 pub async fn respond_file_transfer(
     transfer_mgr: State<'_, Arc<TransferManager>>,
+    transfer_id: String,
+    accepted: bool,
+) -> Result<(), String> {
+    respond_file_transfer_core(transfer_mgr.inner(), transfer_id, accepted).await
+}
+
+pub async fn respond_file_transfer_core(
+    transfer_mgr: &Arc<TransferManager>,
     transfer_id: String,
     accepted: bool,
 ) -> Result<(), String> {
@@ -510,11 +636,7 @@ pub async fn respond_file_transfer(
         return Err("Sender address unknown".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+    let client = shared_transfer_client();
 
     let resp_body = FileTransferResponse {
         transfer_id: transfer_id.clone(),
@@ -526,9 +648,6 @@ pub async fn respond_file_transfer(
         transfer.peer_ip, transfer.peer_port
     );
 
-    // Only mark the transfer accepted locally if the sender really got the answer.
-    // Before, a failed request was ignored: this side showed "Accepted" while
-    // the sender stayed on "Waiting..." forever.
     match client.post(&url).json(&resp_body).send().await {
         Ok(r) if r.status().is_success() => {
             transfer_mgr.handle_response(&transfer_id, accepted);
@@ -542,8 +661,6 @@ pub async fn respond_file_transfer(
     }
 }
 
-/// Kept for compatibility. The sender's backend now starts the upload by itself
-/// as soon as the receiver accepts, so this is safe to call but not required.
 #[tauri::command]
 pub async fn start_file_upload(
     transfer_mgr: State<'_, Arc<TransferManager>>,
@@ -552,11 +669,72 @@ pub async fn start_file_upload(
     spawn_upload(transfer_mgr.inner().clone(), transfer_id)
 }
 
+async fn notify_peer_transfer_action(
+    transfer_mgr: &Arc<TransferManager>,
+    transfer_id: &str,
+    action: &str,
+) {
+    if let Some(t) = transfer_mgr.get_transfer(transfer_id) {
+        if !t.peer_ip.is_empty() && t.peer_port != 0 {
+            let client = shared_transfer_client();
+            let _ = client
+                .post(format!(
+                    "https://{}:{}/api/files/{}/{}",
+                    t.peer_ip, t.peer_port, action, transfer_id
+                ))
+                .send()
+                .await;
+        }
+    }
+}
+
+pub async fn pause_file_transfer_core(
+    transfer_mgr: &Arc<TransferManager>,
+    transfer_id: &str,
+) -> Result<(), String> {
+    transfer_mgr.pause(transfer_id);
+    notify_peer_transfer_action(transfer_mgr, transfer_id, "pause").await;
+    Ok(())
+}
+
+pub async fn resume_file_transfer_core(
+    transfer_mgr: &Arc<TransferManager>,
+    transfer_id: &str,
+) -> Result<(), String> {
+    transfer_mgr.resume(transfer_id);
+    notify_peer_transfer_action(transfer_mgr, transfer_id, "resume").await;
+    Ok(())
+}
+
+pub async fn cancel_file_transfer_core(
+    transfer_mgr: &Arc<TransferManager>,
+    transfer_id: &str,
+) -> Result<(), String> {
+    notify_peer_transfer_action(transfer_mgr, transfer_id, "cancel").await;
+    transfer_mgr.cancel(transfer_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pause_file_transfer(
+    transfer_mgr: State<'_, Arc<TransferManager>>,
+    transfer_id: String,
+) -> Result<(), String> {
+    pause_file_transfer_core(transfer_mgr.inner(), &transfer_id).await
+}
+
+#[tauri::command]
+pub async fn resume_file_transfer(
+    transfer_mgr: State<'_, Arc<TransferManager>>,
+    transfer_id: String,
+) -> Result<(), String> {
+    resume_file_transfer_core(transfer_mgr.inner(), &transfer_id).await
+}
+
 const UPLOAD_CHUNK_SIZE: usize = 512 * 1024;
 const MAX_PARALLEL_UPLOADS: usize = 2;
 const UPLOAD_CHUNK_RETRIES: u32 = 3;
 
-/// Fill `buf` as far as possible (a plain read can return fewer bytes).
 async fn read_full(file: &mut tokio::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
     use tokio::io::AsyncReadExt;
     let mut n = 0;
@@ -596,8 +774,6 @@ async fn post_chunk(
     })
 }
 
-/// Starts uploading an accepted outgoing transfer in the background.
-/// Idempotent: calling it again for the same transfer does nothing.
 pub fn spawn_upload(mgr: Arc<TransferManager>, transfer_id: String) -> Result<(), String> {
     let transfer = mgr
         .get_transfer(&transfer_id)
@@ -623,14 +799,14 @@ pub fn spawn_upload(mgr: Arc<TransferManager>, transfer_id: String) -> Result<()
     }
 
     let cancel_flag = mgr.register_cancellation(&transfer_id);
+    let (pause_flag, pause_notify) = mgr.register_pause(&transfer_id);
     let base = format!("https://{}:{}", transfer.peer_ip, transfer.peer_port);
     let file_size = transfer.file_size;
 
     tokio::spawn(async move {
         let t_id = transfer_id;
 
-        // Wait for a free upload slot (max 2 files at once).
-        let _slot = match mgr.upload_slots().acquire_owned().await {
+        let mut _slot = match mgr.upload_slots().acquire_owned().await {
             Ok(p) => p,
             Err(_) => return,
         };
@@ -646,21 +822,9 @@ pub fn spawn_upload(mgr: Arc<TransferManager>, transfer_id: String) -> Result<()
             }
         };
 
-        let client = match reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(30))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                mgr.mark_failed(&t_id, &e.to_string());
-                return;
-            }
-        };
-
+        let client = shared_transfer_client();
         mgr.update_progress(&t_id, 0, 0.0, TransferStatus::Transferring);
 
-        // An empty file has no chunks: send one empty chunk so the receiver creates it.
         if file_size == 0 {
             match post_chunk(&client, &base, &t_id, 0, Vec::new()).await {
                 Ok(()) => mgr.update_progress(&t_id, 0, 0.0, TransferStatus::Completed),
@@ -674,6 +838,24 @@ pub fn spawn_upload(mgr: Arc<TransferManager>, transfer_id: String) -> Result<()
         let start_time = Instant::now();
 
         loop {
+            if pause_flag.load(Ordering::SeqCst) && !cancel_flag.load(Ordering::SeqCst) {
+                mgr.update_progress(&t_id, offset, 0.0, TransferStatus::Paused);
+                drop(_slot);
+                while pause_flag.load(Ordering::SeqCst) && !cancel_flag.load(Ordering::SeqCst) {
+                    pause_notify.notified().await;
+                }
+                if cancel_flag.load(Ordering::SeqCst) {
+                    let _ = client.post(format!("{}/api/files/cancel/{}", base, t_id)).send().await;
+                    mgr.update_progress(&t_id, offset, 0.0, TransferStatus::Cancelled);
+                    return;
+                }
+                _slot = match mgr.upload_slots().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+                mgr.update_progress(&t_id, offset, 0.0, TransferStatus::Transferring);
+            }
+
             if cancel_flag.load(Ordering::SeqCst) {
                 let _ = client
                     .post(format!("{}/api/files/cancel/{}", base, t_id))
@@ -684,7 +866,7 @@ pub fn spawn_upload(mgr: Arc<TransferManager>, transfer_id: String) -> Result<()
             }
 
             let bytes_read = match read_full(&mut file, &mut buffer).await {
-                Ok(0) => break, // EOF
+                Ok(0) => break,
                 Ok(n) => n,
                 Err(e) => {
                     mgr.mark_failed(&t_id, &format!("Read error: {}", e));
@@ -717,6 +899,8 @@ pub fn spawn_upload(mgr: Arc<TransferManager>, transfer_id: String) -> Result<()
             };
             let status = if offset >= file_size {
                 TransferStatus::Completed
+            } else if pause_flag.load(Ordering::SeqCst) {
+                TransferStatus::Paused
             } else {
                 TransferStatus::Transferring
             };
@@ -736,25 +920,7 @@ pub async fn cancel_file_transfer(
     transfer_mgr: State<'_, Arc<TransferManager>>,
     transfer_id: String,
 ) -> Result<(), String> {
-    if let Some(t) = transfer_mgr.get_transfer(&transfer_id) {
-        if !t.peer_ip.is_empty() && t.peer_port != 0 {
-            if let Ok(c) = reqwest::Client::builder()
-                .danger_accept_invalid_certs(true)
-                .timeout(Duration::from_secs(3))
-                .build()
-            {
-                let _ = c
-                    .post(format!(
-                        "https://{}:{}/api/files/cancel/{}",
-                        t.peer_ip, t.peer_port, transfer_id
-                    ))
-                    .send()
-                    .await;
-            }
-        }
-    }
-    transfer_mgr.cancel(&transfer_id);
-    Ok(())
+    cancel_file_transfer_core(transfer_mgr.inner(), &transfer_id).await
 }
 
 #[tauri::command]
@@ -870,7 +1036,6 @@ pub fn open_file(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        // `cmd /c start` breaks on names containing & ^ % and similar characters.
         std::process::Command::new("rundll32")
             .args(["url.dll,FileProtocolHandler", &path])
             .spawn()
@@ -904,7 +1069,6 @@ pub fn show_in_folder(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        // The quotes must reach explorer.exe unchanged, so use raw_arg.
         use std::os::windows::process::CommandExt;
         std::process::Command::new("explorer")
             .raw_arg(format!("/select,\"{}\"", path))
@@ -954,7 +1118,6 @@ pub fn get_chat_timeline(
     let lim = limit.unwrap_or(200);
     db.get_timeline(&peer_id, lim).map_err(|e| e.to_string())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1035,5 +1198,19 @@ mod tests {
         let m = mgr();
         assert!(m.try_begin_upload("x"));
         assert!(!m.try_begin_upload("x"));
+    }
+
+    #[test]
+    fn pause_and_resume_state_transitions() {
+        let m = mgr();
+        let mut path = std::env::temp_dir();
+        path.push(format!("xent_test_pause_{}.bin", Uuid::new_v4()));
+        let p = path.to_string_lossy().to_string();
+        m.add_transfer(incoming(TransferStatus::Transferring, &p, 100));
+        m.pause("t1");
+        assert_eq!(m.get_transfer("t1").unwrap().status, TransferStatus::Paused);
+        m.resume("t1");
+        assert_eq!(m.get_transfer("t1").unwrap().status, TransferStatus::Transferring);
+        let _ = std::fs::remove_file(path);
     }
 }

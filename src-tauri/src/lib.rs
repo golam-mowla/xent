@@ -36,6 +36,12 @@ fn get_nearby_devices(state: State<'_, Arc<DiscoveryManager>>) -> Vec<Peer> {
 }
 
 #[tauri::command]
+async fn rescan_network(state: State<'_, Arc<DiscoveryManager>>) -> Result<Vec<Peer>, String> {
+    state.rescan().await;
+    Ok(state.get_peers())
+}
+
+#[tauri::command]
 fn update_alias(
     settings_state: State<'_, Arc<SettingsState>>,
     discovery_mgr: State<'_, Arc<DiscoveryManager>>,
@@ -195,7 +201,21 @@ fn open_log_folder() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("explorer")
-            .arg(dir)
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&dir)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -265,61 +285,60 @@ pub fn run() {
             // Tray setup (desktop only: Android has no system tray)
             #[cfg(desktop)]
             {
-            let quit_i = MenuItem::with_id(app, "quit", "Quit Xent", true, None::<&str>)?;
-            let show_i = MenuItem::with_id(app, "show", "Open Xent", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+                let quit_i = MenuItem::with_id(app, "quit", "Quit Xent", true, None::<&str>)?;
+                let show_i = MenuItem::with_id(app, "show", "Open Xent", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
 
-            if let Some(icon) = app.default_window_icon() {
-                let _tray = TrayIconBuilder::new()
-                    .icon(icon.clone())
-                    .menu(&menu)
-                    .show_menu_on_left_click(false)
-                    .on_menu_event(|app, event| match event.id.as_ref() {
-                        "quit" => {
-                            let app_handle = app.clone();
-                            tauri::async_runtime::spawn(async move {
-                                if let Some(mgr) = app_handle.try_state::<Arc<DiscoveryManager>>() {
-                                    mgr.send_bye().await;
-                                }
-                                app_handle.exit(0);
-                            });
-                        }
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
+                if let Some(icon) = app.default_window_icon() {
+                    let _tray = TrayIconBuilder::new()
+                        .icon(icon.clone())
+                        .menu(&menu)
+                        .show_menu_on_left_click(false)
+                        .on_menu_event(|app, event| match event.id.as_ref() {
+                            "quit" => {
+                                let app_handle = app.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    if let Some(mgr) = app_handle.try_state::<Arc<DiscoveryManager>>() {
+                                        mgr.send_bye().await;
+                                    }
+                                    app_handle.exit(0);
+                                });
                             }
-                        }
-                        _ => {}
-                    })
-                    .on_tray_icon_event(|tray, event| {
-                        if let TrayIconEvent::Click {
-                            button: MouseButton::Left,
-                            button_state: MouseButtonState::Up,
-                            ..
-                        } = event
-                        {
-                            let app = tray.app_handle();
-                            if let Some(window) = app.get_webview_window("main") {
-                                if window.is_visible().unwrap_or(false) {
-                                    let _ = window.hide();
-                                } else {
+                            "show" => {
+                                if let Some(window) = app.get_webview_window("main") {
                                     let _ = window.show();
                                     let _ = window.set_focus();
                                 }
                             }
-                        }
-                    })
-                    .build(app)?;
-            }
-
+                            _ => {}
+                        })
+                        .on_tray_icon_event(|tray, event| {
+                            if let TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                button_state: MouseButtonState::Up,
+                                ..
+                            } = event
+                            {
+                                let app = tray.app_handle();
+                                if let Some(window) = app.get_webview_window("main") {
+                                    if window.is_visible().unwrap_or(false) {
+                                        let _ = window.hide();
+                                    } else {
+                                        let _ = window.show();
+                                        let _ = window.set_focus();
+                                    }
+                                }
+                            }
+                        })
+                        .build(app)?;
+                }
             }
 
             tauri::async_runtime::spawn(async move {
                 match server::start_server(
                     current_settings.clone(),
                     cert_for_server.clone(),
-                    db_for_server,
+                    db_for_server.clone(),
                     transfer_mgr_for_server,
                     Some(handle_for_server),
                     Some(settings_state_for_server.clone()),
@@ -343,6 +362,7 @@ pub fn run() {
                     cert_for_server.fingerprint,
                     Some(handle.clone()),
                     Some(settings_state_for_server.clone()),
+                    Some(db_for_server),
                 ));
 
                 handle.manage(discovery_mgr.clone());
@@ -353,7 +373,6 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // Minimize/hide to tray when user closes window
                 let _ = window.hide();
                 api.prevent_close();
             }
@@ -362,6 +381,7 @@ pub fn run() {
             get_device_info,
             get_settings,
             get_nearby_devices,
+            rescan_network,
             update_alias,
             update_settings,
             set_presence,
@@ -378,9 +398,11 @@ pub fn run() {
             open_downloads_folder,
             open_log_folder,
             chat::send_chat_message,
+            chat::retry_chat_message,
             chat::get_chat_history,
             chat::mark_thread_read,
             chat::get_unread_badges,
+            chat::get_known_peers,
             chat::send_typing_indicator,
             chat::edit_chat_message,
             chat::delete_chat_message,
@@ -397,6 +419,8 @@ pub fn run() {
             transfer::send_file_request,
             transfer::respond_file_transfer,
             transfer::start_file_upload,
+            transfer::pause_file_transfer,
+            transfer::resume_file_transfer,
             transfer::cancel_file_transfer,
             transfer::get_transfer_history,
             updater::check_for_updates,

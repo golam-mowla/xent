@@ -103,6 +103,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.xent.app.AndroidUpdateInfo
+import com.xent.app.BuildConfig
 import com.xent.app.ChatMessage
 import com.xent.app.PeerInfo
 import com.xent.app.QueuedUploadSource
@@ -112,6 +114,7 @@ import com.xent.app.TransferStatus
 import com.xent.app.XentEngine
 import com.xent.app.XentFormat
 import com.xent.app.XentSettings
+import com.xent.app.XentUpdater
 import kotlinx.coroutines.launch
 
 enum class XentTab { MESSAGES, NEARBY, SEND_FILES, TRANSFERS }
@@ -149,6 +152,26 @@ fun XentAppScreen(
             val resolved = uris.mapNotNull { engine.resolveUriMetadata(it) }
             queuedFiles = (queuedFiles + resolved).distinctBy { it.uriString ?: it.id }
             currentTab = XentTab.SEND_FILES
+        }
+    }
+
+    val chatAttachPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        val targetPeerId = activePeerId
+        if (uris.isNotEmpty() && targetPeerId != null) {
+            val resolved = uris.mapNotNull { engine.resolveUriMetadata(it) }
+            if (resolved.isNotEmpty()) {
+                scope.launch {
+                    var sentCount = 0
+                    for (src in resolved) {
+                        if (engine.sendFileRequest(targetPeerId, src).isSuccess) sentCount++
+                    }
+                    if (sentCount > 0) {
+                        Toast.makeText(context, "Sending $sentCount file(s)", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
         }
     }
 
@@ -270,6 +293,7 @@ fun XentAppScreen(
                         peer = peer,
                         settings = settings,
                         messages = messages.filter { it.threadPeerId == chatPeerId },
+                        transfers = transfers.filter { it.senderId == chatPeerId || it.receiverId == chatPeerId },
                         isTyping = (typingMap[chatPeerId] ?: 0L) > System.currentTimeMillis() - 3500L,
                         onBack = { activePeerId = null },
                         onSendMessage = { txt, quote -> engine.sendMessage(chatPeerId, txt, quote) },
@@ -280,8 +304,20 @@ fun XentAppScreen(
                         onDeleteMessage = { id -> engine.deleteMessage(chatPeerId, id) },
                         onReaction = { id, emoji -> engine.toggleReaction(chatPeerId, id, emoji) },
                         onPickFilesForPeer = {
-                            preselectedRecipientId = chatPeerId
-                            multiFilePicker.launch(arrayOf("*/*"))
+                            if (peer?.online == true) {
+                                chatAttachPicker.launch(arrayOf("*/*"))
+                            } else {
+                                Toast.makeText(context, "Device is offline; connect first to send files.", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onPauseTransfer = { engine.pauseTransfer(it) },
+                        onResumeTransfer = { engine.resumeTransfer(it) },
+                        onCancelTransfer = { engine.cancelTransfer(it) },
+                        onAcceptTransfer = { engine.respondToOffer(it, true) },
+                        onDeclineTransfer = { engine.respondToOffer(it, false) },
+                        onOpenFile = { path ->
+                            val err = onOpenReceivedFile(path)
+                            if (err != null) Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
                         }
                     )
                 } else {
@@ -557,6 +593,11 @@ private fun MessagesInboxScreen(
     }
 }
 
+private sealed class ChatTimelineEntry(val key: String, val createdAt: Long) {
+    class Msg(val msg: ChatMessage) : ChatTimelineEntry("m_${msg.id}", msg.createdAt)
+    class Tx(val tx: TransferItem) : ChatTimelineEntry("t_${tx.transferId}", tx.createdAt)
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun ChatThreadScreen(
@@ -564,6 +605,7 @@ private fun ChatThreadScreen(
     peer: PeerInfo?,
     settings: XentSettings,
     messages: List<ChatMessage>,
+    transfers: List<TransferItem>,
     isTyping: Boolean,
     onBack: () -> Unit,
     onSendMessage: (String, String?) -> Unit,
@@ -573,7 +615,13 @@ private fun ChatThreadScreen(
     onEditMessage: (String, String) -> Unit,
     onDeleteMessage: (String) -> Unit,
     onReaction: (String, String) -> Unit,
-    onPickFilesForPeer: () -> Unit
+    onPickFilesForPeer: () -> Unit,
+    onPauseTransfer: (String) -> Unit,
+    onResumeTransfer: (String) -> Unit,
+    onCancelTransfer: (String) -> Unit,
+    onAcceptTransfer: (String) -> Unit,
+    onDeclineTransfer: (String) -> Unit,
+    onOpenFile: (String) -> Unit
 ) {
     val context = LocalContext.current
     var draft by remember { mutableStateOf("") }
@@ -585,15 +633,21 @@ private fun ChatThreadScreen(
     var editDraft by remember { mutableStateOf("") }
 
     val listState = rememberLazyListState()
-    val filtered = remember(messages, searchQuery) {
-        if (searchQuery.isBlank()) messages
-        else messages.filter { it.content.contains(searchQuery.trim(), ignoreCase = true) }
+    val timeline = remember(messages, transfers, searchQuery) {
+        val q = searchQuery.trim()
+        val msgEntries = messages
+            .filter { q.isBlank() || it.content.contains(q, ignoreCase = true) }
+            .map { ChatTimelineEntry.Msg(it) }
+        val txEntries = transfers
+            .filter { q.isBlank() || it.fileName.contains(q, ignoreCase = true) }
+            .map { ChatTimelineEntry.Tx(it) }
+        (msgEntries + txEntries).sortedBy { it.createdAt }
     }
 
-    LaunchedEffect(messages.size) {
+    LaunchedEffect(timeline.size) {
         onMarkRead()
-        if (filtered.isNotEmpty()) {
-            listState.animateScrollToItem(filtered.size - 1)
+        if (timeline.isNotEmpty()) {
+            listState.animateScrollToItem(timeline.size - 1)
         }
     }
 
@@ -613,10 +667,7 @@ private fun ChatThreadScreen(
                     Text(
                         text = when {
                             isTyping -> "typing..."
-                            peer?.online == true -> buildString {
-                                append("Online")
-                                peer.latencyMs?.let { append(" • ${it}ms") }
-                            }
+                            peer?.online == true -> "Online • ${peer.ip}:${peer.port}"
                             else -> "Offline • queued messages deliver when back"
                         },
                         style = MaterialTheme.typography.labelSmall,
@@ -658,7 +709,61 @@ private fun ChatThreadScreen(
             contentPadding = PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(filtered, key = { it.id }) { msg ->
+            items(timeline, key = { it.key }) { entry ->
+                if (entry is ChatTimelineEntry.Tx) {
+                    val t = entry.tx
+                    val align = if (t.isIncoming) Alignment.Start else Alignment.End
+                    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = align) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            modifier = Modifier
+                                .widthIn(max = 300.dp)
+                                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(t.fileName, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    text = buildString {
+                                        append(if (t.isIncoming) "Incoming" else "Outgoing")
+                                        append(" • ${XentFormat.formatBytes(t.transferredBytes)} / ${XentFormat.formatBytes(t.fileSize)}")
+                                        if (t.speedMbps > 0.05 && t.status == TransferStatus.TRANSFERRING) {
+                                            append(" • %.1f MB/s".format(t.speedMbps))
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (t.status == TransferStatus.TRANSFERRING || t.status == TransferStatus.PAUSED) {
+                                    Spacer(Modifier.height(6.dp))
+                                    LinearProgressIndicator(progress = { t.progressFraction }, modifier = Modifier.fillMaxWidth())
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = t.status.name,
+                                        fontSize = 11.sp,
+                                        color = if (t.status == TransferStatus.COMPLETED) XentColors.OnlineGreen else MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(Modifier.weight(1f))
+                                    if (t.isIncoming && t.status == TransferStatus.PENDING) {
+                                        TextButton(onClick = { onAcceptTransfer(t.transferId) }) { Text("Accept") }
+                                        TextButton(onClick = { onDeclineTransfer(t.transferId) }) { Text("Decline") }
+                                    } else if (t.status == TransferStatus.TRANSFERRING) {
+                                        TextButton(onClick = { onPauseTransfer(t.transferId) }) { Text("Pause") }
+                                        TextButton(onClick = { onCancelTransfer(t.transferId) }) { Text("Cancel") }
+                                    } else if (t.status == TransferStatus.PAUSED) {
+                                        TextButton(onClick = { onResumeTransfer(t.transferId) }) { Text("Resume") }
+                                        TextButton(onClick = { onCancelTransfer(t.transferId) }) { Text("Cancel") }
+                                    } else if (t.isIncoming && t.status == TransferStatus.COMPLETED && !t.filePath.isNullOrBlank()) {
+                                        TextButton(onClick = { onOpenFile(t.filePath) }) { Text("Open") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return@items
+                }
+                val msg = (entry as ChatTimelineEntry.Msg).msg
                 val align = if (msg.isIncoming) Alignment.Start else Alignment.End
                 val bg = if (msg.isIncoming) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primary
                 val fg = if (msg.isIncoming) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onPrimary
@@ -993,7 +1098,6 @@ private fun NearbyDevicesScreen(
                                         text = buildString {
                                             append(if (peer.online) "Online" else "Offline")
                                             if (peer.ip.isNotBlank()) append(" • ${peer.ip}:${peer.port}")
-                                            peer.latencyMs?.let { append(" • ${it}ms") }
                                             peer.os?.let { append(" • $it") }
                                         },
                                         style = MaterialTheme.typography.labelSmall,
@@ -1319,11 +1423,104 @@ private fun SettingsDialog(
     onToggleSound: (Boolean) -> Unit
 ) {
     var aliasDraft by remember { mutableStateOf(settings.alias) }
+    var updateInfo by remember { mutableStateOf<AndroidUpdateInfo?>(null) }
+    var updateStatus by remember { mutableStateOf("") }
+    var checkingUpdates by remember { mutableStateOf(false) }
+    var downloadingUpdate by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0f) }
+    var downloadedApk by remember { mutableStateOf<java.io.File?>(null) }
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Xent Settings") },
         text = {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_xent_logo),
+                            contentDescription = "Xent",
+                            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp))
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text("Xent v${BuildConfig.VERSION_NAME}", fontWeight = FontWeight.Bold)
+                            Text("LAN messenger & file sharing", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Software Update", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+                            if (updateStatus.isNotBlank()) {
+                                Text(updateStatus, style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (downloadingUpdate) {
+                                LinearProgressIndicator(progress = { downloadProgress }, modifier = Modifier.fillMaxWidth())
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    enabled = !checkingUpdates && !downloadingUpdate,
+                                    onClick = {
+                                        checkingUpdates = true
+                                        updateStatus = "Checking GitHub releases..."
+                                        scope.launch {
+                                            val res = XentUpdater.checkForUpdates(BuildConfig.VERSION_NAME)
+                                            checkingUpdates = false
+                                            if (res.isSuccess) {
+                                                val info = res.getOrThrow()
+                                                updateInfo = info
+                                                updateStatus = if (info.hasUpdate) {
+                                                    "New version v${info.latestVersion} available!"
+                                                } else {
+                                                    "You are on the latest version (v${info.currentVersion})."
+                                                }
+                                            } else {
+                                                updateStatus = "Update check failed: ${res.exceptionOrNull()?.message}"
+                                            }
+                                        }
+                                    }
+                                ) { Text(if (checkingUpdates) "Checking..." else "Check Updates") }
+
+                                val readyApk = downloadedApk
+                                val dlUrl = updateInfo?.downloadUrl
+                                if (readyApk != null) {
+                                    Button(onClick = {
+                                        val msg = XentUpdater.launchApkInstaller(ctx, readyApk)
+                                        if (msg != null) updateStatus = msg
+                                    }) { Text("Install") }
+                                } else if (updateInfo?.hasUpdate == true && !dlUrl.isNullOrBlank()) {
+                                    Button(
+                                        enabled = !downloadingUpdate,
+                                        onClick = {
+                                            downloadingUpdate = true
+                                            downloadProgress = 0f
+                                            updateStatus = "Downloading ${updateInfo?.apkName ?: "update.apk"}..."
+                                            scope.launch {
+                                                val dlRes = XentUpdater.downloadApk(ctx, dlUrl) { p -> downloadProgress = p }
+                                                downloadingUpdate = false
+                                                if (dlRes.isSuccess) {
+                                                    val f = dlRes.getOrThrow()
+                                                    downloadedApk = f
+                                                    val msg = XentUpdater.launchApkInstaller(ctx, f)
+                                                    updateStatus = msg ?: "Installer launched for v${updateInfo?.latestVersion}."
+                                                } else {
+                                                    updateStatus = "Download failed: ${dlRes.exceptionOrNull()?.message}"
+                                                }
+                                            }
+                                        }
+                                    ) { Text("Download & Update") }
+                                }
+                            }
+                        }
+                    }
+                }
                 item {
                     OutlinedTextField(
                         value = aliasDraft,

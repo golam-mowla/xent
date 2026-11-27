@@ -11,8 +11,8 @@ android {
         applicationId = "com.xent.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 28
-        versionName = "0.2.8"
+        versionCode = 29
+        versionName = "0.2.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

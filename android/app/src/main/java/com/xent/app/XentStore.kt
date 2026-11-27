@@ -124,7 +124,6 @@ class XentStore(
         if (peer.deviceId.isBlank() || peer.deviceId == _settingsVal.deviceId) return@synchronized
         val prev = peersMap[peer.deviceId]
         val merged = peer.copy(
-            latencyMs = peer.latencyMs ?: prev?.latencyMs,
             os = peer.os ?: prev?.os,
             fingerprint = peer.fingerprint.ifBlank { prev?.fingerprint ?: "" }
         )

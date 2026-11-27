@@ -110,7 +110,6 @@ async fn e2e_two_instances_messaging_and_file_transfers() {
         .await
         .expect("NodeA should connect to NodeB by IP");
     assert_eq!(peer_b.device_id, node_b.device_id);
-    assert!(peer_b.latency_ms.is_some());
 
     // Register A on B symmetrically as /api/discovery/hello does via AppHandle in full app
     node_b

@@ -1,10 +1,159 @@
 use std::path::PathBuf;
 
 #[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+mod win_native {
+    use std::path::{Path, PathBuf};
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+    use windows::Win32::Foundation::{PROPERTYKEY, S_FALSE, S_OK};
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+        KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
+    };
+    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    use windows::core::Interface;
 
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const XENT_AUMID: &str = "com.xent.app";
+    const STARTUP_REG_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+    // System.AppUserModel.ID = {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, 5
+    const PKEY_APPUSERMODEL_ID: PROPERTYKEY = PROPERTYKEY {
+        fmtid: windows::core::GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
+        pid: 5,
+    };
+
+    fn wide_z(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn set_startup_run_key(enabled: bool, exe_path: &Path) {
+        unsafe {
+            let subkey = wide_z(STARTUP_REG_SUBKEY);
+            let value_name = wide_z("Xent");
+            let mut hkey = HKEY::default();
+            let res = RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(subkey.as_ptr()),
+                Some(0),
+                None,
+                REG_OPTION_NON_VOLATILE,
+                KEY_WRITE,
+                None,
+                &mut hkey,
+                None,
+            );
+            if res.is_err() {
+                return;
+            }
+            if enabled {
+                let cmd_val = format!("\"{}\"", exe_path.to_string_lossy());
+                let wide_val = wide_z(&cmd_val);
+                let byte_slice = std::slice::from_raw_parts(
+                    wide_val.as_ptr() as *const u8,
+                    wide_val.len() * 2,
+                );
+                let _ = RegSetValueExW(hkey, PCWSTR(value_name.as_ptr()), Some(0), REG_SZ, Some(byte_slice));
+            } else {
+                let _ = RegDeleteValueW(hkey, PCWSTR(value_name.as_ptr()));
+            }
+            let _ = RegCloseKey(hkey);
+        }
+    }
+
+    pub fn create_shortcut(lnk_path: &Path, exe_path: &Path, description: &str, aumid: Option<&str>) {
+        if let Some(parent) = lnk_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        unsafe {
+            let init_hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let need_uninit = init_hr == S_OK || init_hr == S_FALSE;
+            let _ = || -> windows::core::Result<()> {
+                let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+                let target_w = wide_z(&exe_path.to_string_lossy());
+                link.SetPath(PCWSTR(target_w.as_ptr()))?;
+
+                if let Some(work) = exe_path.parent() {
+                    let work_w = wide_z(&work.to_string_lossy());
+                    link.SetWorkingDirectory(PCWSTR(work_w.as_ptr()))?;
+                }
+                let desc_w = wide_z(description);
+                link.SetDescription(PCWSTR(desc_w.as_ptr()))?;
+                link.SetIconLocation(PCWSTR(target_w.as_ptr()), 0)?;
+
+                if let Some(id) = aumid {
+                    if let Ok(store) = link.cast::<IPropertyStore>() {
+                        let pv = PROPVARIANT::from(id);
+                        let _ = store.SetValue(&PKEY_APPUSERMODEL_ID, &pv);
+                        let _ = store.Commit();
+                    }
+                }
+
+                let persist: IPersistFile = link.cast()?;
+                let out_w = wide_z(&lnk_path.to_string_lossy());
+                persist.Save(PCWSTR(out_w.as_ptr()), true)?;
+                Ok(())
+            }();
+            if need_uninit {
+                CoUninitialize();
+            }
+        }
+    }
+
+    pub fn ensure_start_menu_shortcut() {
+        let Some(appdata) = std::env::var_os("APPDATA") else {
+            return;
+        };
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        let start_lnk = PathBuf::from(appdata)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("Xent.lnk");
+        create_shortcut(&start_lnk, &exe, "Xent LAN Messenger", Some(XENT_AUMID));
+    }
+
+    fn escape_xml(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        for ch in input.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&apos;"),
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+
+    pub fn show_native_toast(title: &str, body: &str) -> bool {
+        let xml_str = format!(
+            "<toast><visual><binding template='ToastGeneric'><text>{}</text><text>{}</text></binding></visual></toast>",
+            escape_xml(title),
+            escape_xml(body)
+        );
+        let run = || -> windows::core::Result<()> {
+            let doc = XmlDocument::new()?;
+            doc.LoadXml(&HSTRING::from(xml_str))?;
+            let toast = ToastNotification::CreateToastNotification(&doc)?;
+            let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(XENT_AUMID))?;
+            notifier.Show(&toast)?;
+            Ok(())
+        };
+        run().is_ok()
+    }
+}
 
 pub fn token_file_path() -> PathBuf {
     crate::paths::data_dir().join("local_ipc.token")
@@ -112,42 +261,12 @@ pub fn try_handoff_to_running_instance(port: u16, paths: &[String]) -> bool {
     })
 }
 
-/// Register or unregister Xent in Windows HKCU Startup (`Run`) without showing a console window.
+/// Register or unregister Xent in OS startup via native Win32 Registry API (zero external processes).
 pub fn sync_startup_registration(enabled: bool) {
     #[cfg(target_os = "windows")]
     {
-        let exe = match std::env::current_exe() {
-            Ok(p) => p,
-            Err(_) => return,
-        };
-        let exe_str = exe.to_string_lossy().to_string();
-        if enabled {
-            let cmd_val = format!("\"{}\"", exe_str);
-            let _ = std::process::Command::new("reg")
-                .args([
-                    "add",
-                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                    "/v",
-                    "Xent",
-                    "/t",
-                    "REG_SZ",
-                    "/d",
-                    &cmd_val,
-                    "/f",
-                ])
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn();
-        } else {
-            let _ = std::process::Command::new("reg")
-                .args([
-                    "delete",
-                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                    "/v",
-                    "Xent",
-                    "/f",
-                ])
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn();
+        if let Ok(exe) = std::env::current_exe() {
+            win_native::set_startup_run_key(enabled, &exe);
         }
     }
 
@@ -177,36 +296,15 @@ pub fn sync_startup_registration(enabled: bool) {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn encode_ps_utf16_b64(script: &str) -> String {
-    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut bytes = Vec::with_capacity(script.len() * 2);
-    for unit in script.encode_utf16() {
-        bytes.extend_from_slice(&unit.to_le_bytes());
-    }
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(B64[((n >> 18) & 0x3F) as usize] as char);
-        out.push(B64[((n >> 12) & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 { B64[((n >> 6) & 0x3F) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[(n & 0x3F) as usize] as char } else { '=' });
-    }
-    out
-}
-
-/// Create or remove Windows Explorer right-click "Send to -> Xent" shortcut (`SendTo\Xent.lnk`).
+/// Create or remove Windows Explorer right-click "Send to -> Xent" shortcut + Start Menu AppID shortcut via native COM.
 pub fn sync_send_to_shortcut(enabled: bool) {
     #[cfg(target_os = "windows")]
     {
-        let appdata = match std::env::var_os("APPDATA") {
-            Some(v) => PathBuf::from(v),
-            None => return,
+        win_native::ensure_start_menu_shortcut();
+        let Some(appdata) = std::env::var_os("APPDATA") else {
+            return;
         };
-        let sendto_lnk = appdata
+        let sendto_lnk = PathBuf::from(appdata)
             .join("Microsoft")
             .join("Windows")
             .join("SendTo")
@@ -217,40 +315,9 @@ pub fn sync_send_to_shortcut(enabled: bool) {
             return;
         }
 
-        let exe = match std::env::current_exe() {
-            Ok(p) => p,
-            Err(_) => return,
-        };
-        let work_dir = exe
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        // Values are passed via environment variables + UTF-16LE EncodedCommand (immune to quote stripping).
-        let ps = r#"
-$ws = New-Object -ComObject WScript.Shell
-$s = $ws.CreateShortcut($env:XENT_LNK_PATH)
-$s.TargetPath = $env:XENT_EXE_PATH
-$s.WorkingDirectory = $env:XENT_WORK_DIR
-$s.IconLocation = "$($env:XENT_EXE_PATH),0"
-$s.Description = "Send files with Xent"
-$s.Save()
-"#;
-        let encoded = encode_ps_utf16_b64(ps);
-        let _ = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-EncodedCommand",
-                &encoded,
-            ])
-            .env("XENT_LNK_PATH", sendto_lnk.to_string_lossy().as_ref())
-            .env("XENT_EXE_PATH", exe.to_string_lossy().as_ref())
-            .env("XENT_WORK_DIR", &work_dir)
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn();
+        if let Ok(exe) = std::env::current_exe() {
+            win_native::create_shortcut(&sendto_lnk, &exe, "Send files with Xent", Some("com.xent.app"));
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -259,46 +326,23 @@ $s.Save()
     }
 }
 
-/// Fire a native OS desktop notification asynchronously without blocking request handlers.
+/// Fire a real native OS desktop notification directly in-process (zero PowerShell).
 pub fn send_os_notification(title: String, body: String) {
+    let clean_title: String = title.chars().take(100).collect();
+    let clean_body: String = body.chars().take(240).collect();
+
     #[cfg(target_os = "windows")]
     {
-        let clean_title: String = title.chars().take(100).collect();
-        let clean_body: String = body.chars().take(240).collect();
-        let ps = r#"
-[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-$t = [System.Security.SecurityElement]::Escape($env:XENT_NTITLE)
-$b = [System.Security.SecurityElement]::Escape($env:XENT_NBODY)
-$xmlStr = "<toast><visual><binding template='ToastGeneric'><text>$t</text><text>$b</text></binding></visual></toast>"
-$doc = New-Object Windows.Data.Xml.Dom.XmlDocument
-$doc.LoadXml($xmlStr)
-$toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
-$appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
-"#;
-        let encoded = encode_ps_utf16_b64(ps);
         std::thread::spawn(move || {
-            let _ = std::process::Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-WindowStyle",
-                    "Hidden",
-                    "-EncodedCommand",
-                    &encoded,
-                ])
-                .env("XENT_NTITLE", clean_title)
-                .env("XENT_NBODY", clean_body)
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
+            if !win_native::show_native_toast(&clean_title, &clean_body) {
+                win_native::ensure_start_menu_shortcut();
+                let _ = win_native::show_native_toast(&clean_title, &clean_body);
+            }
         });
     }
 
     #[cfg(target_os = "macos")]
     {
-        let clean_title: String = title.chars().take(100).collect();
-        let clean_body: String = body.chars().take(240).collect();
         std::thread::spawn(move || {
             let script = format!(
                 "display notification \"{}\" with title \"{}\"",
@@ -313,8 +357,6 @@ $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershe
 
     #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
     {
-        let clean_title: String = title.chars().take(100).collect();
-        let clean_body: String = body.chars().take(240).collect();
         std::thread::spawn(move || {
             let _ = std::process::Command::new("notify-send")
                 .args([&clean_title, &clean_body])
@@ -324,7 +366,7 @@ $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershe
 
     #[cfg(target_os = "android")]
     {
-        let _ = (title, body);
+        let _ = (clean_title, clean_body);
     }
 }
 
@@ -337,15 +379,6 @@ mod tests {
         assert!(constant_time_eq("abc123", "abc123"));
         assert!(!constant_time_eq("abc123", "abc124"));
         assert!(!constant_time_eq("abc", "abcd"));
-    }
-
-    #[test]
-    fn encode_ps_utf16_b64_matches_powershell_format() {
-        #[cfg(target_os = "windows")]
-        {
-            assert_eq!(encode_ps_utf16_b64("a"), "YQA=");
-            assert_eq!(encode_ps_utf16_b64("hi"), "aABpAA==");
-        }
     }
 
     #[test]
@@ -364,5 +397,24 @@ mod tests {
         assert!(expanded.iter().any(|p| p.ends_with("b.txt")));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn native_win_shortcut_and_toast_api_work() {
+        let lnk = std::env::temp_dir().join(format!("xent_lnk_test_{}.lnk", uuid::Uuid::new_v4()));
+        let exe = std::env::current_exe().unwrap();
+        win_native::create_shortcut(&lnk, &exe, "Test shortcut", Some("com.xent.app"));
+        assert!(lnk.exists(), "Native COM IShellLinkW must create .lnk file");
+        let _ = std::fs::remove_file(&lnk);
+
+        // Verify WinRT XmlDocument + ToastNotificationManager creation works on a spawned thread
+        let ok = std::thread::spawn(|| {
+            win_native::ensure_start_menu_shortcut();
+            win_native::show_native_toast("Xent Test", "Native WinRT notification check")
+        })
+        .join()
+        .unwrap();
+        assert!(ok, "Native WinRT ToastNotificationManager.Show must succeed without PowerShell");
     }
 }

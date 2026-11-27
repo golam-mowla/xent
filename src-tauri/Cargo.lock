@@ -5987,7 +5987,7 @@ dependencies = [
 
 [[package]]
 name = "xent"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "axum",
  "axum-server",
@@ -6014,6 +6014,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower-http 0.5.2",
  "uuid",
+ "windows",
 ]
 
 [[package]]

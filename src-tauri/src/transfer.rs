@@ -1022,13 +1022,17 @@ pub async fn pick_folder_to_send() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub fn get_files_metadata(paths: Vec<String>) -> Vec<SelectedFileMeta> {
-    paths
+    crate::os_integration::expand_file_paths(paths)
         .into_iter()
         .filter_map(|p| {
             let pb = std::path::PathBuf::from(&p);
             if pb.is_file() {
                 let size = std::fs::metadata(&pb).map(|m| m.len()).unwrap_or(0);
-                let name = pb.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
+                let name = pb
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("file")
+                    .to_string();
                 Some(SelectedFileMeta { path: p, name, size })
             } else {
                 None

@@ -296,7 +296,6 @@ async fn discovery_hello_handler(
             },
             status_message: remote_info.status_message.clone(),
             os: remote_info.os.clone(),
-            latency_ms: None,
         };
 
         if let Some(ref handle) = state.app_handle {

@@ -14,6 +14,26 @@ import java.nio.file.Files
 class XentProtocolTest {
 
     @Test
+    fun updaterParsesTagsAndApkLinksWithoutApiRateLimits() {
+        assertTrue(XentUpdater.isNewerVersion("0.2.9", "0.2.8"))
+        assertFalse(XentUpdater.isNewerVersion("0.2.8", "0.2.8"))
+        assertEquals(
+            "v0.2.8",
+            XentUpdater.parseTagFromReleaseUrl("https://github.com/golam-mowla/xent/releases/tag/v0.2.8")
+        )
+        val expanded = """
+            <a href="/golam-mowla/xent/releases/download/v0.2.8/Xent_0.2.8_x64-setup.exe">exe</a>
+            <a href="/golam-mowla/xent/releases/download/v0.2.8/Xent-Android-v0.2.8.apk">apk</a>
+        """.trimIndent()
+        val asset = XentUpdater.parseApkAssetFromExpandedHtml(expanded, "v0.2.8")
+        assertEquals(
+            "https://github.com/golam-mowla/xent/releases/download/v0.2.8/Xent-Android-v0.2.8.apk",
+            asset?.first
+        )
+        assertEquals("Xent-Android-v0.2.8.apk", asset?.second)
+    }
+
+    @Test
     fun filenameSanitizationHandlesTraversalAndReservedNames() {
         assertEquals("report.pdf", XentFormat.sanitizeFileName("../../etc/report.pdf"))
         assertEquals("a_b_c.txt", XentFormat.sanitizeFileName("a:b?c.txt"))

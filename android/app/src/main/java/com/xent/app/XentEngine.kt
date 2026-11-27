@@ -394,12 +394,10 @@ class XentEngine(
             } else {
                 trimmed to 53317
             }
-            val startMs = System.nanoTime()
             val (code, body) = XentCrypto.postJson(
                 ip, port, "/api/discovery/hello", buildDeviceInfoJson().toString(), tls.clientContext
             )
             if (code !in 200..299) error("Peer returned HTTP $code")
-            val rttMs = ((System.nanoTime() - startMs) / 1_000_000L).coerceAtLeast(1L)
             val json = JSONObject(body)
             val peer = PeerInfo(
                 deviceId = json.optString("device_id"),
@@ -412,7 +410,6 @@ class XentEngine(
                 status = json.optString("status", "available"),
                 statusMessage = json.optString("status_message", ""),
                 lastSeenMs = System.currentTimeMillis(),
-                latencyMs = rttMs,
                 online = true
             )
             store.upsertPeer(peer)
@@ -500,14 +497,12 @@ class XentEngine(
                     if (msgType == "announce") {
                         launch {
                             runCatching {
-                                val t0 = System.nanoTime()
                                 val (c, _) = XentCrypto.postJson(
                                     senderIp, peerPort, "/api/discovery/hello",
                                     buildDeviceInfoJson().toString(), tls.clientContext, 2000, 3000
                                 )
                                 if (c in 200..299) {
-                                    val rtt = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
-                                    store.upsertPeer(peer.copy(latencyMs = rtt, lastSeenMs = System.currentTimeMillis()))
+                                    store.upsertPeer(peer.copy(lastSeenMs = System.currentTimeMillis()))
                                 }
                             }
                         }
@@ -524,20 +519,6 @@ class XentEngine(
                     runCatching { broadcastPresence("announce") }
                     store.getSettings().manualPeers.forEach { addr ->
                         launch { addPeerByIp(addr) }
-                    }
-                    // Ping online peers to keep RTT fresh
-                    store.getPeers().filter { it.online }.forEach { peer ->
-                        launch {
-                            val t0 = System.nanoTime()
-                            val ok = runCatching {
-                                val (c, _) = XentCrypto.getText(peer.ip, peer.port, "/api/ping", tls.clientContext, 1500, 2000)
-                                c == 200
-                            }.getOrDefault(false)
-                            if (ok) {
-                                val rtt = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
-                                store.upsertPeer(peer.copy(latencyMs = rtt, lastSeenMs = System.currentTimeMillis(), online = true))
-                            }
-                        }
                     }
                 }
                 store.pruneStalePeers(20_000L)

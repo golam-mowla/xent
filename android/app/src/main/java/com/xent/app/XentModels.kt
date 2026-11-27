@@ -113,7 +113,6 @@ data class PeerInfo(
     val status: String = "available",
     val statusMessage: String = "",
     val lastSeenMs: Long = System.currentTimeMillis(),
-    val latencyMs: Long? = null,
     val online: Boolean = true
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
@@ -127,7 +126,6 @@ data class PeerInfo(
         put("status", status)
         put("status_message", statusMessage)
         put("last_seen_ms", lastSeenMs)
-        put("latency_ms", latencyMs ?: JSONObject.NULL)
         put("online", online)
     }
 
@@ -143,7 +141,6 @@ data class PeerInfo(
             status = obj.optString("status", "available"),
             statusMessage = obj.optString("status_message", ""),
             lastSeenMs = obj.optLong("last_seen_ms", System.currentTimeMillis()),
-            latencyMs = if (obj.isNull("latency_ms")) null else obj.optLong("latency_ms"),
             online = obj.optBoolean("online", false)
         )
     }

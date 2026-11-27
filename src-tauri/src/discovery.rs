@@ -5,7 +5,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::{Arc, OnceLock, RwLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use tokio::net::UdpSocket;
 
@@ -59,8 +59,6 @@ pub struct Peer {
     pub status_message: String,
     #[serde(default)]
     pub os: String,
-    #[serde(default)]
-    pub latency_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -227,10 +225,6 @@ impl DiscoveryManager {
             let mut lock = self.peers.write().unwrap();
             if let Some(existing) = lock.get_mut(&peer.device_id) {
                 existing.last_seen = peer.last_seen;
-                if peer.latency_ms.is_some() && existing.latency_ms != peer.latency_ms {
-                    existing.latency_ms = peer.latency_ms;
-                    changed = true;
-                }
                 if existing.alias != peer.alias
                     || existing.ip != peer.ip
                     || existing.port != peer.port
@@ -272,10 +266,8 @@ impl DiscoveryManager {
         target_port: u16,
         my_id: &str,
     ) -> Option<Peer> {
-        let start = Instant::now();
         let url = format!("https://{}:{}/api/info", target_ip, target_port);
         let resp = client.get(&url).send().await.ok()?;
-        let rtt = start.elapsed().as_millis().max(1) as u64;
         if resp.status().is_success() {
             let info = resp.json::<crate::server::DeviceInfoResponse>().await.ok()?;
             if info.device_id != my_id {
@@ -294,7 +286,6 @@ impl DiscoveryManager {
                     },
                     status_message: info.status_message,
                     os: info.os,
-                    latency_ms: Some(rtt),
                 });
             }
         }
@@ -310,9 +301,7 @@ impl DiscoveryManager {
         }
         let client = shared_probe_client();
         let url = format!("https://{}:{}/api/discovery/hello", target_ip, target_port);
-        let start = Instant::now();
         if let Ok(resp) = client.post(&url).json(&info).send().await {
-            let rtt = start.elapsed().as_millis().max(1) as u64;
             if resp.status().is_success() {
                 if let Ok(remote_info) = resp.json::<crate::server::DeviceInfoResponse>().await {
                     if remote_info.device_id != self.settings.device_id {
@@ -331,7 +320,6 @@ impl DiscoveryManager {
                             },
                             status_message: remote_info.status_message,
                             os: remote_info.os,
-                            latency_ms: Some(rtt),
                         });
                     }
                 }
@@ -692,7 +680,6 @@ impl DiscoveryManager {
                                 status: peer_status,
                                 status_message: packet.status_message.clone(),
                                 os: packet.os.clone(),
-                                latency_ms: None,
                             };
 
                             let is_new_or_changed = self.register_or_update_peer(peer);
@@ -816,7 +803,6 @@ impl DiscoveryManager {
     }
 
     async fn run_pruner(&self) {
-        let probe_client = shared_probe_client();
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         loop {
             interval.tick().await;
@@ -851,32 +837,6 @@ impl DiscoveryManager {
                 }
             }
 
-            // A peer that stopped announcing is not necessarily gone: during a big
-            // file transfer the Wi-Fi is saturated and UDP announcements get lost.
-            // Ask it directly before removing it from the list (also updates RTT latency).
-            let stale: Vec<(String, String, u16)> = {
-                let lock = self.peers.read().unwrap();
-                lock.values()
-                    .filter(|p| now.saturating_sub(p.last_seen) >= 12)
-                    .map(|p| (p.device_id.clone(), p.ip.clone(), p.port))
-                    .collect()
-            };
-            let mut latency_updated = false;
-            for (id, ip, port) in stale {
-                let start = Instant::now();
-                let alive = match probe_client.get(format!("https://{}:{}/api/ping", ip, port)).send().await {
-                    Ok(r) if r.status().is_success() => Some(start.elapsed().as_millis().max(1) as u64),
-                    _ => None,
-                };
-                if let Some(rtt) = alive {
-                    if let Some(p) = self.peers.write().unwrap().get_mut(&id) {
-                        p.last_seen = Self::now_secs();
-                        p.latency_ms = Some(rtt);
-                        latency_updated = true;
-                    }
-                }
-            }
-
             let mut removed = false;
             {
                 let mut lock = self.peers.write().unwrap();
@@ -892,7 +852,7 @@ impl DiscoveryManager {
                     removed = true;
                 }
             }
-            if removed || latency_updated {
+            if removed {
                 self.emit_peers_changed();
             }
         }
